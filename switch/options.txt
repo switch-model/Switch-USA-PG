@@ -1,0 +1,11 @@
+# --recommended
+--verbose --stream-solver --log-run
+--sorted-output
+
+#--inputs-dir inputs_TX
+#--outputs-dir outputs_TX
+--solver gurobi
+# --solver-options-string "SolutionLimit=1 BarHomogeneous=1 FeasibilityTol=1e-5"
+--solver-options-string ""
+# --module-list "SWITCH info/REAM Scenario 178/scenario178_inputs/modules.txt"
+#--logs-dir logs_TX
