@@ -1,0 +1,27 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# editor settings
+.ipynb_checkpoints
+.vscode
+*.code-workspace
+.spyderproject
+.spyproject
+
+# VS Code settings
+**/.vscode
+
+# Ignore all subdirectories (generally pipeline outputs) except a few
+*/
+!switch/
+!switch/*
+!PowerGenome/
+!PowerGenome/**
+!MIP_results_comparison/
+!MIP_results_comparison/**
+
+# macOS metadata (can make repository impossible to clone on Windows
+Icon?
+.DS_Store

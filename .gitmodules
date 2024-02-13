@@ -1,6 +1,6 @@
 [submodule "MIP_results_comparison"]
 	path = MIP_results_comparison
-	url = https://github.com/gschivley/MIP_results_comparison.git
+	url = ./MIP_results_comparison
 [submodule "PowerGenome"]
 	path = PowerGenome
 	url = https://github.com/PowerGenome/PowerGenome.git
