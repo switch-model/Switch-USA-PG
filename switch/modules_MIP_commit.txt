@@ -10,7 +10,8 @@ switch_model.reporting
 #switch_model.generators.core.no_commit
 switch_model.generators.core.commit.operate
 # switch_model.generators.extensions.hydro_simple
-switch_model.generators.extensions.hydro_system
+# switch_model.generators.extensions.hydro_system
+mip_modules.hydro_system
 switch_model.generators.extensions.storage
 #switch_model.energy_sources.fuel_costs.markets
 switch_model.energy_sources.fuel_costs.simple

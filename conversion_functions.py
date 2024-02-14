@@ -970,9 +970,6 @@ def hydro_timeseries_pg_kmeans(
     pd.DataFrame
         The hydro_timeseries table for Switch
     """
-
-    breakpoint()
-
     hydro_df = gen.copy()
     # ? why multiply Min_Power
     # hydro_df["min_cap_mw"] = hydro_df["Existing_Cap_MW"] * hydro_df["Min_Power"]
@@ -1522,6 +1519,7 @@ def hydro_system_module_tables(
             wnode_tp_inflow <- inflow_m3_per_s
             wnode_tp_consumption <- 0
     """
+
     hydro_df = gen.copy()
     hydro_df = hydro_df.loc[hydro_df["HYDRO"] == 1, :]
 
@@ -1544,22 +1542,29 @@ def hydro_system_module_tables(
     water_connections["WATER_CONNECTIONS"] = hydro_df["Resource"]
     water_connections["water_node_from"] = hydro_df["Resource"] + "_inlet"
     water_connections["water_node_to"] = hydro_df["Resource"] + "_outlet"
-    water_connections["wc_capacity"] = hydro_df["Existing_Cap_MW"]
+    water_connections["wc_capacity"] = hydro_df["Existing_Cap_MW"] * flow_per_mw  # m3/s
 
     # for reservoirs.csv
+    # note: reservoir volume and level are given in million m3
     reservoirs = pd.DataFrame()
     reservoirs["RESERVOIRS"] = hydro_df["Resource"] + "_inlet"
     reservoirs["res_min_vol"] = 0
-    # reservoirs["res_max_vol"] = "."
-    # reservoirs["initial_res_vol"] = "."
-    # reservoirs["final_res_vol"] = "."x
+    # (MW)(hour)((m3/s)/MW)(3600 sec/hour)(1 million m3/1e6 m3) = million m3
     reservoirs["res_max_vol"] = (
-        flow_per_mw
-        * hydro_df["Hydro_Energy_to_Power_Ratio"]
-        * hydro_df["Existing_Cap_MW"]
+        hydro_df["Existing_Cap_MW"]  # MW
+        * hydro_df["Hydro_Energy_to_Power_Ratio"]  # h
+        * flow_per_mw  # m3/s / MW
+        * 3600  # m3/sec -> m3/hour
+        * 1e-6  # m3 -> million m3
     )
-    reservoirs["initial_res_vol"] = 0.5 * reservoirs["res_max_vol"]
-    reservoirs["final_res_vol"] = 0.5 * reservoirs["res_max_vol"]
+
+    # Currently not using initial_res_vol and final_res_vol; Switch will
+    # will choose a starting level and loop from end to start of timeseries
+    # instead. If these are wanted, they need to be stored in
+    # reservoir_ts_data.csv, with reservoir and timeseries as the indexes.
+    # reservoirs["initial_res_vol"] = 0.5 * reservoirs["res_max_vol"]
+    # reservoirs["final_res_vol"] = 0.5 * reservoirs["res_max_vol"]
+
     # for hydro_generation_projects.csv
     hydro_pj = pd.DataFrame()
     hydro_pj["HYDRO_GENERATION_PROJECTS"] = hydro_df["Resource"]
