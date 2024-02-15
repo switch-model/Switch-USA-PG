@@ -93,8 +93,8 @@ def fuel_files(
     fuel_prices: pd.DataFrame,
     planning_years: List[int],
     regions: List[str],
-    fuel_region_map: Dict[str, List[str]],
-    fuel_emission_factors: Dict[str, float],
+    fuel_region_map: dict[str, List[str]],
+    fuel_emission_factors: dict[str, float],
     out_folder: Path,
 ):
     fuel_cost = switch_fuel_cost_table(
@@ -1238,7 +1238,7 @@ def transmission_tables(settings, out_folder, pg_engine):
         {
             "trans_capital_cost_per_mw_km": trans_capital_cost_per_mw_km,
             "trans_lifetime_yrs": 60,  # it was 20, now change to 60 for national_emm comparison by RR
-            "trans_fixed_om_fraction": settings.get("trans_fixed_om_fraction", 0.03),
+            "trans_fixed_om_fraction": settings.get("trans_fixed_om_fraction", 0.0),
         },
         index=[0],
     )

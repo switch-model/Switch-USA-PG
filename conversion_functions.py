@@ -1558,10 +1558,14 @@ def hydro_system_module_tables(
         * 1e-6  # m3 -> million m3
     )
 
-    # Currently not using initial_res_vol and final_res_vol; Switch will
-    # will choose a starting level and loop from end to start of timeseries
-    # instead. If these are wanted, they need to be stored in
-    # reservoir_ts_data.csv, with reservoir and timeseries as the indexes.
+    # The initial_res_vol and final_res_vol calculations commented out below
+    # would work with the standard hydro_system module. But that doesn't work
+    # well with multi- timeseries periods, so we use a new version that does,
+    # and we let it optimize the starting level and loop from end to start of
+    # timeseries. If these are wanted for the new module (not used by other
+    # models in this study), they should be stored in reservoir_ts_data.csv,
+    # with reservoir and timeseries as the indexes.
+
     # reservoirs["initial_res_vol"] = 0.5 * reservoirs["res_max_vol"]
     # reservoirs["final_res_vol"] = 0.5 * reservoirs["res_max_vol"]
 
