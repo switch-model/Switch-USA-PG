@@ -417,8 +417,6 @@ def gen_build_predetermined(
     #     gen_buildpre = gen_buildpre.append([new_builds2020, new_builds2030, new_builds2040, new_builds2050],
     #                                        ignore_index=True)
 
-    # TODO: #1 why is "capex_mwh" being renamed to "gen_predetermined_storage_energy_mwh"?
-    # TODO: #2 should use Existing_Cap_MW instead of Cap_Size for existing capacity
     gen_buildpre.rename(
         columns={
             capacity_col: "gen_predetermined_cap",
@@ -455,7 +453,7 @@ def gen_build_predetermined(
 
 def gen_build_costs_table(settings, existing_gen, newgens):
     """
-    Create gen_build_costs table based off of REAM Scenarior 178.
+    Create gen_build_costs table
     Inputs
         pandas dataframes
             existing_gen - from PowerGenome gc.create_region_technology_clusters()

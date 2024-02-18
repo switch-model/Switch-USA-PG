@@ -33,6 +33,7 @@ from powergenome.generators import *
 from powergenome.external_data import (
     make_demand_response_profiles,
     make_generator_variability,
+    load_demand_segments,
 )
 from powergenome.GenX import (
     add_misc_gen_values,
@@ -87,6 +88,25 @@ if not sys.warnoptions:
     import warnings
 
     warnings.simplefilter("ignore")
+
+
+# convenience functions to get first/final keys/values from dicts
+# (e.g., first year in a dictionary organized by years)
+# note: these use the order of creation, not lexicographic order
+def first_key(d: dict):
+    return next(iter(d.keys()))
+
+
+def first_value(d: dict):
+    return next(iter(d.values()))
+
+
+def final_key(d: dict):
+    return next(reversed(d.keys()))
+
+
+def final_value(d: dict):
+    return next(reversed(d.values()))
 
 
 def fuel_files(
@@ -175,10 +195,6 @@ def fuel_files(
 
 def gen_projects_info_file(
     fuel_prices: pd.DataFrame,
-    # gc: GeneratorClusters,
-    # pudl_engine: sa.engine,
-    # settings_list: List[dict],
-    # settings_file: str,
     complete_gens: pd.DataFrame,
     settings: dict,
     out_folder: Path,
@@ -412,14 +428,6 @@ def gen_projects_info_file(
     cols = ["map_name", "gen_type", "gen_tech", "energy_source"]
     graph_tech_types_table = graph_tech_types_table[cols]
 
-    # settings = load_settings(path=settings_file)
-    # pudl_engine, pudl_out, pg_engine = init_pudl_connection(
-    #     freq="AS",
-    #     start_year=min(settings.get("data_years")),
-    #     end_year=max(settings.get("data_years")),
-    # )
-    # gc = GeneratorClusters(pudl_engine, pudl_out, pg_engine, settings_list[0])
-    # fuel_prices = gc.fuel_prices
     fuels = fuel_prices["fuel"].unique()
     fuels = [fuel.capitalize() for fuel in fuels]
     non_fuel_table = graph_tech_types_table[
@@ -473,20 +481,19 @@ def gen_prebuild_newbuild_info_files(
     gc: GeneratorClusters,
     all_fuel_prices,
     pudl_engine: sa.engine,
-    settings_list: List[dict],
-    case_years: List,
+    scen_settings_dict: dict[dict],
     out_folder: Path,
     pg_engine: sa.engine,
     hydro_variability_new: pd.DataFrame,
 ):
     out_folder.mkdir(parents=True, exist_ok=True)
-    settings = settings_list[0]
+    first_year_settings = first_value(scen_settings_dict)
     all_gen = gc.create_all_generators()
-    all_gen = add_misc_gen_values(all_gen, settings)
+    all_gen = add_misc_gen_values(all_gen, first_year_settings)
     all_gen = hydro_energy_to_power(
         all_gen,
-        settings.get("hydro_factor"),
-        settings.get("regional_hydro_factor", {}),
+        first_year_settings.get("hydro_factor"),
+        first_year_settings.get("regional_hydro_factor", {}),
     )
     all_gen["Resource"] = all_gen["Resource"].str.rstrip("_")
     all_gen["technology"] = all_gen["technology"].str.rstrip("_")
@@ -585,12 +592,12 @@ def gen_prebuild_newbuild_info_files(
 
     # create copies of potential_build_yr (powergenome)
     pg_build = gc.units_model.copy()
-    if settings.get("derate_capacity"):
+    if first_year_settings.get("derate_capacity"):
         pg_build = derate_by_capacity_factor(
-            derate_techs=settings.get("derate_techs", []),
+            derate_techs=first_year_settings.get("derate_techs", []),
             unit_df=pg_build,
             existing_gen_df=existing_gen,
-            cap_col=settings.get("capacity_col", "capacity_mw"),
+            cap_col=first_year_settings.get("capacity_col", "capacity_mw"),
         )
     pg_build = pg_build[
         [
@@ -602,13 +609,13 @@ def gen_prebuild_newbuild_info_files(
             "operating_date",
             "operating_year",
             "retirement_year",
-            settings.get("capacity_col", "capacity_mw"),
+            first_year_settings.get("capacity_col", "capacity_mw"),
             "capacity_mwh",
             "technology",
         ]
     ]
 
-    retirement_ages = settings.get("retirement_ages")
+    retirement_ages = first_year_settings.get("retirement_ages")
 
     row_list = []
     for row in all_gen.itertuples():
@@ -642,11 +649,11 @@ def gen_prebuild_newbuild_info_files(
         {},  # plant_gen_manual_proposed,
         {},  # plant_gen_manual_retired,
         retirement_ages,
-        settings.get("capacity_col", "capacity_mw"),
+        first_year_settings.get("capacity_col", "capacity_mw"),
     )
 
     retired = gen_build_with_id.loc[
-        gen_build_with_id["retirement_year"] < settings["model_year"], :
+        gen_build_with_id["retirement_year"] < first_year_settings["model_year"], :
     ]
     retired_ids = retired["GENERATION_PROJECT"].to_list()
 
@@ -657,34 +664,36 @@ def gen_prebuild_newbuild_info_files(
     }
     planning_periods = []
     planning_period_start_yrs = []
-    for settings in settings_list:
-        gc.settings = settings
+    for year_settings in scen_settings_dict.values():
+        # define new generators (period_ng)
+        orig_gc_settings = gc.settings
+        gc.settings = year_settings
         period_ng = gc.create_new_generators()
+        gc.settings = orig_gc_settings
+
         period_ng["Resource"] = period_ng["Resource"].str.rstrip("_")
         period_ng["technology"] = period_ng["technology"].str.rstrip("_")
-        period_ng["build_year"] = settings["model_year"]
-        period_ng["GENERATION_PROJECT"] = period_ng[
-            "Resource"
-        ]  # + f"_{settings['model_year']}"
-        if settings.get("co2_pipeline_filters") and settings.get(
+        period_ng["build_year"] = year_settings["model_year"]
+        period_ng["GENERATION_PROJECT"] = period_ng["Resource"]
+        if year_settings.get("co2_pipeline_filters") and year_settings.get(
             "co2_pipeline_cost_fn"
         ):
             period_ng = merge_co2_pipeline_costs(
                 df=period_ng,
-                co2_data_path=settings["input_folder"]
-                / settings.get("co2_pipeline_cost_fn"),
-                co2_pipeline_filters=settings["co2_pipeline_filters"],
-                region_aggregations=settings.get("region_aggregations"),
-                fuel_emission_factors=settings["fuel_emission_factors"],
-                target_usd_year=settings.get("target_usd_year"),
+                co2_data_path=year_settings["input_folder"]
+                / year_settings.get("co2_pipeline_cost_fn"),
+                co2_pipeline_filters=year_settings["co2_pipeline_filters"],
+                region_aggregations=year_settings.get("region_aggregations"),
+                fuel_emission_factors=year_settings["fuel_emission_factors"],
+                target_usd_year=year_settings.get("target_usd_year"),
             )
 
         periods_dict["new_gen"].append(period_ng)
 
-        period_lc = make_final_load_curves(pg_engine, settings)
+        period_lc = make_final_load_curves(pg_engine, year_settings)
         periods_dict["load_curves"].append(period_lc)
-        planning_periods.append(settings["model_year"])
-        planning_period_start_yrs.append(settings["model_first_planning_year"])
+        planning_periods.append(year_settings["model_year"])
+        planning_period_start_yrs.append(year_settings["model_first_planning_year"])
 
     newgens = pd.concat(periods_dict["new_gen"], ignore_index=True)
     newgens = add_co2_costs_to_o_m(newgens)
@@ -725,18 +734,18 @@ def gen_prebuild_newbuild_info_files(
         ["reduce_capacity"], axis=1
     )
 
-    gen_build_costs = gen_build_costs_table(settings, gen_buildpre, newgens)
+    gen_build_costs = gen_build_costs_table(first_year_settings, gen_buildpre, newgens)
     # Create a complete list of existing and new-build options
     ## if running an operation model, remove all candidate projects.
-    if settings.get("operation_model") is True:
+    if first_year_settings.get("operation_model", False):
         newgens = pd.DataFrame()
     complete_gens = pd.concat([existing_gen, newgens]).drop_duplicates(
         subset=["Resource"]
     )
-    complete_gens = add_misc_gen_values(complete_gens, settings)
+    complete_gens = add_misc_gen_values(complete_gens, first_year_settings)
 
     gen_projects_info_file(
-        all_fuel_prices, complete_gens, gc.settings, out_folder, gen_buildpre
+        all_fuel_prices, complete_gens, first_year_settings, out_folder, gen_buildpre
     )
 
     ts_list = []
@@ -752,11 +761,13 @@ def gen_prebuild_newbuild_info_files(
     hydro_pj_list = []
     water_node_tp_flows_list = []
     timepoint_start = 1
-    for settings, period_lc, period_ng in zip(
-        settings_list, periods_dict["load_curves"], periods_dict["new_gen"]
+    for year_settings, period_lc, period_ng in zip(
+        scen_settings_dict.values(),
+        periods_dict["load_curves"],
+        periods_dict["new_gen"],
     ):
         ## if running an operation model, remove all candidate projects.
-        if settings.get("operation_model") is True:
+        if year_settings.get("operation_model") is True:
             period_ng = pd.DataFrame()
 
         period_all_gen = pd.concat([existing_gen, period_ng])
@@ -784,9 +795,9 @@ def gen_prebuild_newbuild_info_files(
         for col in MIS_D_MS_hydro:
             period_all_gen_variability[col] = hydro_variability_new["MIS_D_MS"]
 
-        if settings.get("reduce_time_domain") is True:
+        if year_settings.get("reduce_time_domain") is True:
             for p in ["time_domain_periods", "time_domain_days_per_period"]:
-                assert p in settings.keys()
+                assert p in year_settings.keys()
 
             # results is a dict with keys "resource_profiles" (gen_variability), "load_profiles",
             # "time_series_mapping" (maps clusters sequentially to potential periods in year),
@@ -794,11 +805,13 @@ def gen_prebuild_newbuild_info_files(
             results, representative_point, weights = kmeans_time_clustering(
                 resource_profiles=period_all_gen_variability,
                 load_profiles=period_lc,
-                days_in_group=settings["time_domain_days_per_period"],
-                num_clusters=settings["time_domain_periods"],
-                include_peak_day=settings.get("include_peak_day", True),
-                load_weight=settings.get("demand_weight_factor", 1),
-                variable_resources_only=settings.get("variable_resources_only", True),
+                days_in_group=year_settings["time_domain_days_per_period"],
+                num_clusters=year_settings["time_domain_periods"],
+                include_peak_day=year_settings.get("include_peak_day", True),
+                load_weight=year_settings.get("demand_weight_factor", 1),
+                variable_resources_only=year_settings.get(
+                    "variable_resources_only", True
+                ),
             )
 
             period_lc = results["load_profiles"]
@@ -807,9 +820,9 @@ def gen_prebuild_newbuild_info_files(
             timeseries_df, timepoints_df = ts_tp_pg_kmeans(
                 representative_point["slot"],
                 weights,
-                settings["time_domain_days_per_period"],
-                settings["model_year"],
-                settings["model_first_planning_year"],
+                year_settings["time_domain_days_per_period"],
+                year_settings["model_year"],
+                year_settings["model_first_planning_year"],
             )
             timepoints_df["timepoint_id"] = range(
                 timepoint_start, timepoint_start + len(timepoints_df)
@@ -851,19 +864,19 @@ def gen_prebuild_newbuild_info_files(
             loads = loads.append(dummy_df)
             graph_timestamp_map = graph_timestamp_map_kmeans(timepoints_df)
         else:
-            if settings.get("full_time_domain") is True:
+            if year_settings.get("full_time_domain") is True:
                 timeseries_df, timepoints_df, timestamp_interval = timeseries_full(
                     period_lc,
-                    settings["model_year"],
-                    settings["model_first_planning_year"],
-                    settings=settings,
+                    year_settings["model_year"],
+                    year_settings["model_first_planning_year"],
+                    settings=year_settings,
                 )
             else:
                 timeseries_df, timepoints_df, timestamp_interval = timeseries(
                     period_lc,
-                    settings["model_year"],
-                    settings["model_first_planning_year"],
-                    settings=settings,
+                    year_settings["model_year"],
+                    year_settings["model_first_planning_year"],
+                    settings=year_settings,
                 )
 
             timepoints_df["timepoint_id"] = range(
@@ -885,7 +898,7 @@ def gen_prebuild_newbuild_info_files(
                 period_all_gen,
                 period_all_gen_variability,
                 timepoints_df,
-                settings["model_year"],
+                year_settings["model_year"],
             )
             hydro_timepoints_df
 
@@ -904,7 +917,10 @@ def gen_prebuild_newbuild_info_files(
                 flow_per_mw=1.02,
             )
             loads, loads_with_year_hour = loads_table(
-                period_lc, timepoints_timestamp, timepoints_dict, settings["model_year"]
+                period_lc,
+                timepoints_timestamp,
+                timepoints_dict,
+                year_settings["model_year"],
             )
             # for fuel_cost and regional_fuel_market issue
             dummy_df = pd.DataFrame({"TIMEPOINT": timepoints_tp_id})
@@ -919,7 +935,7 @@ def gen_prebuild_newbuild_info_files(
                 year_hour,
                 timepoints_dict,
                 period_all_gen,
-                settings["model_year"],
+                year_settings["model_year"],
             )
 
             graph_timestamp_map = graph_timestamp_map_table(
@@ -966,7 +982,7 @@ def gen_prebuild_newbuild_info_files(
     timepoints_df.to_csv(out_folder / "timepoints.csv", index=False)
     hydro_timepoints_df.to_csv(out_folder / "hydro_timepoints.csv", index=False)
 
-    balancing_tables(settings, pudl_engine, all_gen_units, out_folder)
+    balancing_tables(year_settings, pudl_engine, all_gen_units, out_folder)
     hydro_timeseries_table.to_csv(out_folder / "hydro_timeseries.csv", index=False)
     loads.to_csv(out_folder / "loads.csv", index=False)
     vcf.to_csv(out_folder / "variable_capacity_factors.csv", index=False)
@@ -987,59 +1003,50 @@ def gen_prebuild_newbuild_info_files(
 
 
 def other_tables(
-    settings, period_start_list, period_end_list, atb_data_year, out_folder
+    scen_settings_dict,
+    out_folder,
 ):
-    if settings.get("emission_policies_fn"):
-        model_year = settings["model_year"]
-        for i in model_year:
-            # energy_share_req = create_policy_req(_settings, col_str_match="ESR")
-            co2_cap = create_policy_req(settings, col_str_match="CO_2")
-            df = {
-                "period": [i],
-                "carbon_cap_tco2_per_yr": [
-                    co2_cap["CO_2_Max_Mtons_1"].sum() * 1000000
-                ],  # Mton to ton, the unit in PG is Mton; column name need to be updated.
-                "carbon_cap_tco2_per_yr_CA": [
-                    "."
-                ],  # change this value if the CA policy module is included.
-                "carbon_cost_dollar_per_tco2": [
-                    "."
-                ],  # change this value if you would like to look at the social cost instead og carbon cap.
+    rows = []
+
+    for my, scen_settings in scen_settings_dict.items():
+        # energy_share_req = create_policy_req(_settings, col_str_match="ESR")
+        co2_cap = create_policy_req(scen_settings, col_str_match="CO_2")
+        rows.append(
+            {
+                "period": my,
+                # Mton to ton, the unit in PG is Mton; column name need to be updated.
+                "carbon_cap_tco2_per_yr": co2_cap["CO_2_Max_Mtons_1"].sum() * 1000000,
+                "carbon_cost_dollar_per_tco2": scen_settings.get(
+                    "carbon_cost_dollar_per_tco2", "."
+                ),
             }
-    else:  # Based on REAM
-        df = {
-            # "period": [2030, 2040, 2050],
-            # "carbon_cap_tco2_per_yr": [149423302.5, 76328672.3, 0],
-            # "carbon_cap_tco2_per_yr_CA": [36292500, 11400000, 0],
-            # "carbon_cost_dollar_per_tco2": [".", ".", "."],
-            "period": [2050],
-            "carbon_cap_tco2_per_yr": [0],
-            "carbon_cap_tco2_per_yr_CA": [0],
-            "carbon_cost_dollar_per_tco2": ["."],
-        }
+        )
 
-    carbon_policies_table = pd.DataFrame(df)
+    carbon_policies_table = pd.DataFrame.from_records(rows)
 
-    carbon_policies_table
+    first_year_settings = first_value(scen_settings_dict)
 
-    # interest and discount based on REAM
-    financials_data = {
-        "base_financial_year": atb_data_year,
-        "interest_rate": 0.05,
-        "discount_rate": 0.05,
-    }
-    financials_table = pd.DataFrame(financials_data, index=[0])
-    financials_table
+    financials_table = pd.DataFrame(
+        {"base_financial_year": [first_year_settings["atb_data_year"]]}
+    )
+    for name, default in [("interest_rate", 0.05), ("discount_rate", 0.03)]:
+        if name in first_year_settings:
+            financials_table[name] = first_year_settings[name]
+        else:
+            financials_table[name] = default
+            print(
+                f"\nNo {name} setting found (usually in switch_params.yml); "
+                f"using default value of {default}."
+            )
 
-    # based on REAM
     periods_data = {
-        # "INVESTMENT_PERIOD": [2020, 2030, 2040, 2050],
-        # "period_start": [2016, 2026, 2036, 2046],
-        # "period_end": [2025, 2035, 2045, 2055],
-        "INVESTMENT_PERIOD": period_end_list,
-        "period_start": period_start_list,
-        "period_end": period_end_list,
+        "INVESTMENT_PERIOD": scen_settings_dict.keys(),
+        "period_start": [
+            s["model_first_planning_year"] for s in scen_settings_dict.values()
+        ],
+        "period_end": scen_settings_dict.keys(),  # convention for MIP studies
     }
+
     periods_table = pd.DataFrame(periods_data)
     periods_table
     # write switch version txt file
@@ -1047,9 +1054,18 @@ def other_tables(
     file.write("2.0.7")
     file.close()
 
+    # this could potentially have different Voll for different segments, and it's
+    # not clear what the difference is between the Voll and $/MWh columns. For
+    # now, we just use the average of Voll across all segments.
+    demand_segments = load_demand_segments(first_value(scen_settings_dict))
+    lost_load_cost_table = pd.DataFrame(
+        {"unserved_load_penalty": [demand_segments.loc[:, "Voll"].mean()]}
+    )
+
     carbon_policies_table.to_csv(out_folder / "carbon_policies.csv", index=False)
     financials_table.to_csv(out_folder / "financials.csv", index=False)
     periods_table.to_csv(out_folder / "periods.csv", index=False)
+    lost_load_cost_table.to_csv(out_folder / "lost_load_cost.csv", index=False)
 
 
 from powergenome.generators import load_ipm_shapefile
@@ -1067,12 +1083,15 @@ from powergenome.util import init_pudl_connection, load_settings, check_settings
 from statistics import mean
 
 
-def transmission_tables(settings, out_folder, pg_engine):
+def transmission_tables(scen_settings_dict, out_folder, pg_engine):
     """
     pulling in information from PowerGenome transmission notebook
     Schivley Greg, PowerGenome, (2022), GitHub repository,
         https://github.com/PowerGenome/PowerGenome/blob/master/notebooks/Transmission.ipynb
     """
+    # we just use settings for the first year, since these don't change across
+    # years in the model
+    settings = first_value(scen_settings_dict)
     model_regions = settings["model_regions"]
 
     transmission = agg_transmission_constraints(pg_engine=pg_engine, settings=settings)
@@ -1283,7 +1302,8 @@ def main(
     # case_id: Annotated[Optional[List[str]], typer.Option()] = None,
     # year: Annotated[Optional[List[float]], typer.Option()] = None,
     case_id: List[str] = None,
-    year: List[float] = None,
+    year: List[int] = None,
+    myopic: bool = False,
 ):
     """Create inputs for the Switch model using PowerGenome data
 
@@ -1300,9 +1320,13 @@ def main(
     case_id : Annotated[List[str], typer.Option, optional
         A list of case IDs, by default None. If using from CLI, provide a single case ID
         after each flag
-    year : Annotated[List[float], typer.Option, optional
+    year : Annotated[List[int], typer.Option, optional
         A list of years, by default None. If using from CLI, provide a single year
         after each flag
+    myopic : bool, optional
+        A flag indicating whether to create model inputs in myopic mode (separate
+        models for each study year) or as a single multi-year model (default).
+        If only one year is chosen with the --year flag, this will have no effect.
     """
     cwd = Path.cwd()
     out_folder = cwd / results_folder
@@ -1311,27 +1335,6 @@ def main(
     # cases/years
 
     settings = load_settings(path=settings_file)
-    if year is None:
-        year = settings["model_year"]
-    else:
-        remove_model_years = []
-        remove_start_years = []
-        for model_year, start_year in zip(
-            settings["model_year"], settings["model_first_planning_year"]
-        ):
-            if model_year not in year:
-                # Create lists of years to remove.
-                remove_model_years.append(model_year)
-                remove_start_years.append(start_year)
-
-        settings["model_year"] = [
-            y for y in settings["model_year"] if y not in remove_model_years
-        ]
-        settings["model_first_planning_year"] = [
-            y
-            for y in settings["model_first_planning_year"]
-            if y not in remove_start_years
-        ]
     pudl_engine, pudl_out, pg_engine = init_pudl_connection(
         freq="AS",
         start_year=min(settings.get("eia_data_years")),
@@ -1340,77 +1343,136 @@ def main(
     check_settings(settings, pg_engine)
     input_folder = cwd / settings["input_folder"]
     settings["input_folder"] = input_folder
-    scenario_definitions = pd.read_csv(
-        input_folder / settings["scenario_definitions_fn"]
-    )
-    if case_id is None:
-        case_id = scenario_definitions.case_id.unique()
+
+    # note: beginning Feb. 2024, we no longer filter the settings dictionary
+    # down to the specified years; instead we allow it to hold all available
+    # data (possibly more than needed), and draw from it as needed for each
+    # scenario.
+
+    # get dataframe of scenario descriptions
+    scen_def_fn = input_folder / settings["scenario_definitions_fn"]
+    scenario_definitions = pd.read_csv(scen_def_fn)
+
+    # filter scenarios to match requested case_id(s) and year(s) if any
+    # note: typer gives an empty list (not None) if no options are specified
+    if case_id:
+        filter_cases = case_id
     else:
-        scenario_definitions = scenario_definitions.loc[
-            scenario_definitions["case_id"].isin(case_id), :
-        ]
+        filter_cases = scenario_definitions.case_id.unique()
+
+    if year:
+        filter_years = year
+    else:
+        filter_years = scenario_definitions.year.unique()
+
+    scenario_definitions = scenario_definitions.loc[
+        (
+            scenario_definitions["case_id"].isin(filter_cases)
+            & scenario_definitions["year"].isin(filter_years)
+        ),
+        :,
+    ]
+
+    if scenario_definitions.empty:
+        if case_id or year:
+            extra = " matching the requested case_id(s) or year(s)"
+        print(f"WARNING: No scenarios{extra} were found in {scen_def_fn}.\n")
+    else:
+        print("\nPreparing models for the following cases and years:")
+        print(scenario_definitions[["case_id", "year"]].to_string(index=False))
+        print()
+
+        missing = set(case_id).difference(set(scenario_definitions["case_id"]))
+        if missing:
+            print(
+                f"WARNING: requested case(s) {missing} were not found in {scen_def_fn}.\n"
+            )
+        missing = set(year).difference(set(scenario_definitions["year"]))
+        if missing:
+            print(
+                f"WARNING: requested year(s) {missing} were not found in {scen_def_fn}.\n"
+            )
+        # if case_id and year and len(found) < len(filter_cases) * len(filter_years):
+        #     print(f"Note that not every combination of case_id and year specified on the command line was defined in {scen_def_fn}.")
+
+    # build scenario_settings dict, with scenario-specific values for each
+    # scenario. scenario_settings will have keys for all available years, then
+    # all available cases within that year (possibly mixed case-year
+    # combinations)
     scenario_settings = build_scenario_settings(settings, scenario_definitions)
 
-    # load hydro_variability_new, and need to add varibality for region 'MIS_D_MS'
+    # convert scenario_settings dict from year/case to case/year so we can easily
+    # retrieve all years for each case later
+    case_settings = {}
+    for y, cases in scenario_settings.items():
+        for c, case_year_settings in cases.items():
+            case_settings.setdefault(c, {})[y] = case_year_settings
+
+    # load hydro_variability_new, and need to add variability for region 'MIS_D_MS'
     # by copying values from ' MIS_AR'
     hydro_var = pd.read_csv(input_folder / settings["hydro_variability_fn"])
     hydro_var["MIS_D_MS"] = hydro_var["MIS_AR"].values
     hydro_variability_new = hydro_var.copy()
 
-    # Should switch the case_id/year layers in scenario settings dictionary.
+    if myopic:
+        # run each case/year separately; split the settings for each year into
+        # separate dicts and process them individually
+        to_run = [
+            (c, {y: year_settings})
+            for c, scen_settings_dict in case_settings
+            for y, year_settings in scen_settings_dict.items()
+        ]
+    else:
+        # run all years together within each case
+        to_run = list(case_settings.items())
+
     # Run through the different cases and save files in a new folder for each.
-    for case_id in scenario_definitions["case_id"].unique():
-        print(f"starting case {case_id}")
-        case_folder = out_folder / case_id
+    # (Should switch the case_id/year layers in scenario settings dictionary.)
+    for c, scen_settings_dict in to_run:
+        # c is case_id for this case
+        # scen_settings_dict has all settings for this case, organized by year
+        print(f"\nstarting case {c}")
+        case_folder = out_folder / c
         case_folder.mkdir(parents=True, exist_ok=True)
 
-        settings[
-            "case_id"
-        ] = case_id  # add by Rangrang to make 'GenX.create_policy_req' work for this script.
+        first_year_settings = first_value(scen_settings_dict)
+        final_year_settings = final_value(scen_settings_dict)
 
-        settings_list = []
-        case_years = []
-        case_start_years = []
-        for year in settings["model_year"]:
-            case_years.append(scenario_settings[year][case_id]["model_year"])
-            settings_list.append(scenario_settings[year][case_id])
-            case_start_years.append(
-                scenario_settings[year][case_id]["model_first_planning_year"]
-            )
+        # # retrieve gc for this case, using settings for first year so we get all
+        # # plants that survive up to that point (using last year would exclude
+        # # plants that retire during the study)
+        # gc = GeneratorClusters(pudl_engine, pudl_out, pg_engine, first_year_settings)
 
-        gc = GeneratorClusters(pudl_engine, pudl_out, pg_engine, settings_list[0])
-        all_fuel_prices = add_user_fuel_prices(
-            scenario_settings[year][case_id], gc.fuel_prices
-        )
-        gen_prebuild_newbuild_info_files(
-            gc,
-            all_fuel_prices,
-            pudl_engine,
-            settings_list,
-            case_years,
-            case_folder,
-            pg_engine,
-            hydro_variability_new,
-        )
-        fuel_files(
-            fuel_prices=all_fuel_prices,
-            planning_years=case_years,
-            regions=settings["model_regions"],
-            fuel_region_map=settings["aeo_fuel_region_map"],
-            fuel_emission_factors=settings["fuel_emission_factors"],
-            out_folder=case_folder,
-        )
-        # other_tables(atb_data_year=settings["atb_data_year"], out_folder=case_folder)
+        # # gc.fuel_prices already spans all years. We assume any added fuels show
+        # # up in the last year of the study. Then add_user_fuel_prices() adds them
+        # # to all years of the study (it only accepts one price for all years).
+        # all_fuel_prices = add_user_fuel_prices(final_year_settings, gc.fuel_prices)
+
+        # # generate Switch input tables from the PowerGenome settings/data
+        # gen_prebuild_newbuild_info_files(
+        #     gc,
+        #     all_fuel_prices,
+        #     pudl_engine,
+        #     scen_settings_dict,
+        #     case_folder,
+        #     pg_engine,
+        #     hydro_variability_new,
+        # )
+        # fuel_files(
+        #     fuel_prices=all_fuel_prices,
+        #     planning_years=list(scen_settings_dict.keys()),
+        #     regions=final_year_settings["model_regions"],
+        #     fuel_region_map=final_year_settings["aeo_fuel_region_map"],
+        #     fuel_emission_factors=final_year_settings["fuel_emission_factors"],
+        #     out_folder=case_folder,
+        # )
         other_tables(
-            settings=settings,
-            period_start_list=case_start_years,
-            period_end_list=case_years,
-            atb_data_year=settings["atb_data_year"],
+            scen_settings_dict=scen_settings_dict,
             out_folder=case_folder,
         )
+
         transmission_tables(
-            settings,
-            # settings_list[0],
+            scen_settings_dict,
             case_folder,
             pg_engine,
         )
