@@ -4,5 +4,5 @@
 	shallow = true
 [submodule "PowerGenome"]
 	path = PowerGenome
-	url = https://github.com/PowerGenome/PowerGenome.git
+	url = https://github.com/switch-model/PowerGenome.git
 	shallow = true
