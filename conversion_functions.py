@@ -598,36 +598,36 @@ def generation_projects_info(
     # for now, modifyng the translation layer --RR
     if "co2_pipeline_capex_mw" not in gen_project_info.columns:
         gen_project_info["co2_pipeline_capex_mw"] = 0
-    # get columns for GENERATION_PROJECT, gen_tech, gen_load_zone, gen_full_load_heat_rate, gen_variable_om,
-    # gen_connect_cost_per_mw and gen_capacity_limit_mw
-    gen_project_info = gen_project_info[
-        [
-            # "index",
-            "GENERATION_PROJECT",
-            "technology",
-            "region",
-            "Heat_Rate_MMBTU_per_MWh",
-            "Var_OM_Cost_per_MWh",
-            "spur_miles",
-            "Existing_Cap_MW",
-            "spur_capex",
-            "interconnect_capex_mw",
-            "co2_pipeline_capex_mw",
-            "Eff_Up",
-            "Eff_Down",
-            "VRE",
-            "gen_is_variable",
-            "Max_Cap_MW",
-            "gen_energy_source",
-            "gen_is_cogen",
-            "gen_is_baseload",
-            "gen_ccs_capture_efficiency",
-            "gen_ccs_energy_load",
-            "gen_scheduled_outage_rate",
-            "gen_forced_outage_rate",
-            "gen_type",
-        ]
-    ]
+    # # get columns for GENERATION_PROJECT, gen_tech, gen_load_zone, gen_full_load_heat_rate, gen_variable_om,
+    # # gen_connect_cost_per_mw and gen_capacity_limit_mw
+    # gen_project_info = gen_project_info[
+    #     [
+    #         # "index",
+    #         "GENERATION_PROJECT",
+    #         "technology",
+    #         "region",
+    #         "Heat_Rate_MMBTU_per_MWh",
+    #         "Var_OM_Cost_per_MWh",
+    #         "spur_miles",
+    #         "Existing_Cap_MW",
+    #         "spur_capex",
+    #         "interconnect_capex_mw",
+    #         "co2_pipeline_capex_mw",
+    #         "Eff_Up",
+    #         "Eff_Down",
+    #         "VRE",
+    #         "gen_is_variable",
+    #         "Max_Cap_MW",
+    #         "gen_energy_source",
+    #         "gen_is_cogen",
+    #         "gen_is_baseload",
+    #         "gen_ccs_capture_efficiency",
+    #         "gen_ccs_energy_load",
+    #         "gen_scheduled_outage_rate",
+    #         "gen_forced_outage_rate",
+    #         "gen_type",
+    #     ]
+    # ]
 
     # Include co2 pipeline costs as part of connection -- could also be in build capex
     gen_project_info["gen_connect_cost_per_mw"] = gen_project_info[
@@ -674,13 +674,6 @@ def generation_projects_info(
     gen_project_info["gen_store_to_release_ratio"] = gen_project_info[
         "gen_store_to_release_ratio"
     ].fillna(".")
-
-    # add column for ccs
-    # gen_project_info["gen_ccs_capture_efficiency"] = 0
-    # gen_project_info.loc[
-    #     gen_project_info["technology"].str.contains("ccs", case=False),
-    #     "gen_ccs_capture_efficiency",
-    # ] = 0.9
     # additional columns based on REAM
     gen_project_info["gen_min_build_capacity"] = 0  # REAM is just 0 or .
     gen_project_info["gen_can_provide_cap_reserves"] = (
@@ -763,6 +756,27 @@ def generation_projects_info(
         "gen_ccs_energy_load",
         "gen_storage_energy_to_power_ratio",
         "gen_type",
+        "ESR_1",  # Below are the columns used for current policy
+        "ESR_2",
+        "ESR_3",
+        "ESR_4",
+        "ESR_5",
+        "ESR_6",
+        "ESR_7",
+        "ESR_8",
+        "ESR_9",
+        "ESR_10",
+        "ESR_11",
+        "ESR_12",
+        "ESR_13",
+        "ESR_14",
+        "ESR_15",
+        "ESR_16",
+        "MinCapTag_1",
+        "MinCapTag_2",
+        "MinCapTag_3",
+        "MinCapTag_4",
+        "MinCapTag_5",
     ]  # index
 
     # remove NaN
@@ -968,6 +982,7 @@ def hydro_timeseries_pg_kmeans(
     pd.DataFrame
         The hydro_timeseries table for Switch
     """
+
     hydro_df = gen.copy()
     # ? why multiply Min_Power
     # hydro_df["min_cap_mw"] = hydro_df["Existing_Cap_MW"] * hydro_df["Min_Power"]

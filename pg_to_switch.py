@@ -41,6 +41,7 @@ from powergenome.GenX import (
     add_co2_costs_to_o_m,
     create_policy_req,
     set_must_run_generation,
+    min_cap_req,
 )
 from powergenome.co2_pipeline_cost import merge_co2_pipeline_costs
 
@@ -476,6 +477,52 @@ def gen_projects_info_file(
     # SWITCH 2.0.7 changes file name from  "generation_projects_info.csv" to "gen_info.csv"
     gen_project_info.to_csv(out_folder / "gen_info.csv", index=False)
 
+    ###############################################################
+    ###### make tables for current policy (2030) of rps requirement.
+    ESR_col = [col for col in gen_project_info.columns if col.startswith("ESR")]
+    ESR_generators = gen_project_info[
+        [
+            col
+            for col in gen_project_info
+            if col.startswith("ESR") or col == "GENERATION_PROJECT"
+        ]
+    ]
+    ESR_generators_long = pd.melt(
+        ESR_generators, id_vars=["GENERATION_PROJECT"], value_vars=ESR_col
+    )
+    ESR_generators_long["PERIOD"] = settings.get("model_year")
+    ESR_generators_long = ESR_generators_long[ESR_generators_long["value"] == 1].rename(
+        columns={"variable": "ESR_PROGRAM", "GENERATION_PROJECT": "esr_gen"}
+    )
+    ESR_generators_long = ESR_generators_long[["ESR_PROGRAM", "PERIOD", "esr_gen"]]
+    ESR_generators_long.to_csv(out_folder / "ESR_generators.csv", index=False)
+
+    ###### make tables for current policy (2030) of offshore wind capacity requirement.
+    min_cap_col = [
+        col for col in gen_project_info.columns if col.startswith("MinCapTag")
+    ]
+    min_cap_generators = gen_project_info[
+        [
+            col
+            for col in gen_project_info
+            if col.startswith("MinCapTag") or col == "GENERATION_PROJECT"
+        ]
+    ]
+    min_cap_generators_long = pd.melt(
+        min_cap_generators, id_vars=["GENERATION_PROJECT"], value_vars=min_cap_col
+    )
+    min_cap_generators_long["PERIOD"] = settings.get("model_year")
+    min_cap_generators_long = min_cap_generators_long[
+        min_cap_generators_long["value"] == 1
+    ].rename(
+        columns={"variable": "MIN_CAP_PROGRAM", "GENERATION_PROJECT": "MIN_CAP_GEN"}
+    )
+    min_cap_generators_long = min_cap_generators_long[
+        ["MIN_CAP_PROGRAM", "PERIOD", "MIN_CAP_GEN"]
+    ]
+    min_cap_generators_long.to_csv(out_folder / "min_cap_generators.csv", index=False)
+    ###############################################################
+
 
 def gen_prebuild_newbuild_info_files(
     gc: GeneratorClusters,
@@ -733,6 +780,7 @@ def gen_prebuild_newbuild_info_files(
     existing_gen = existing_gen[existing_gen["Existing_Cap_MW"] > 0].drop(
         ["reduce_capacity"], axis=1
     )
+    ###########################################################
 
     gen_build_costs = gen_build_costs_table(first_year_settings, gen_buildpre, newgens)
     # Create a complete list of existing and new-build options
@@ -1006,26 +1054,86 @@ def other_tables(
     scen_settings_dict,
     out_folder,
 ):
-    rows = []
-
-    for my, scen_settings in scen_settings_dict.items():
-        # energy_share_req = create_policy_req(_settings, col_str_match="ESR")
-        co2_cap = create_policy_req(scen_settings, col_str_match="CO_2")
-        rows.append(
-            {
-                "period": my,
-                # Mton to ton, the unit in PG is Mton; column name need to be updated.
-                "carbon_cap_tco2_per_yr": co2_cap["CO_2_Max_Mtons_1"].sum() * 1000000,
-                "carbon_cost_dollar_per_tco2": scen_settings.get(
-                    "carbon_cost_dollar_per_tco2", "."
-                ),
-            }
-        )
-
-    carbon_policies_table = pd.DataFrame.from_records(rows)
-
+    # get first year settings, which include any generic, cross-year settings
     first_year_settings = first_value(scen_settings_dict)
 
+    if first_year_settings.get("emission_policies_fn"):
+
+        # create carbon_policies.csv file to define a single carbon cap across all
+        # regions (users can turn this on or off by including the carbon_policies
+        # module)
+        co2_rows = []
+        for my, scen_settings in scen_settings_dict.items():
+            co2_cap = create_policy_req(scen_settings, col_str_match="CO_2_Max_Mtons")
+            co2_rows.append(
+                {
+                    "period": my,
+                    # Mton to ton, the unit in PG is Mton; column name need to be updated.
+                    "carbon_cap_tco2_per_yr": co2_cap["CO_2_Max_Mtons_1"].sum()
+                    * 1000000,
+                    "carbon_cost_dollar_per_tco2": scen_settings.get(
+                        "carbon_cost_dollar_per_tco2", "."
+                    ),
+                }
+            )
+
+        carbon_policies_table = pd.DataFrame.from_records(co2_rows)
+        carbon_policies_table.to_csv(out_folder / "carbon_policies.csv", index=False)
+
+        # create carbon_policies_regional.csv with policies on a regional basis
+        for i, scen_settings in scen_settings_dict.items():
+            # TODO: aggregate across years instead of writing each year separately
+            co2_cap = create_policy_req(scen_settings, col_str_match="CO_2_Max_Mtons")
+            if co2_cap is not None:
+                # co2_cap = co2_cap.set_index("Region_description")
+                co2_cap.index.name = None
+                # need to update "CO2_PROGRAM" column in case of multiple carbon policy is applying,
+                # for now, since there is only one program, input anay random number/ string: "one" for example.
+                co2_cap["CO2_PROGRAM"] = "one"
+                co2_cap["PERIOD"] = i
+                co2_cap = pd.DataFrame(co2_cap)
+                co2_cap.rename(
+                    columns={
+                        "Region_description": "LOAD_ZONE",
+                        "CO_2_Max_Mtons_1": "zone_co2_cap",
+                    },
+                    inplace=True,
+                )
+                #  CHECK the data,whether there are zeros. if there are zeros and they referer to no policy
+                # requirement in a specific zone. change zero to "." for switch inputs in a mean of infinity.
+                co2_cap.loc[co2_cap["zone_co2_cap"] == 0, "zone_co2_cap"] = "."
+                co2_cap = co2_cap[
+                    ["CO2_PROGRAM", "PERIOD", "LOAD_ZONE", "zone_co2_cap"]
+                ]
+
+                co2_cap.to_csv(out_folder / "carbon_policies_regional.csv", index=False)
+
+            # create ESR_requirement.csv with clean energy standards / RPS requirements
+            energy_share_req = create_policy_req(scen_settings, col_str_match="ESR")
+            if energy_share_req is not None:
+                ESR_col = [
+                    col for col in energy_share_req.columns if col.startswith("ESR")
+                ]
+                energy_share_long = pd.melt(
+                    energy_share_req, id_vars=["Region_description"], value_vars=ESR_col
+                )
+                energy_share_long = pd.DataFrame(energy_share_long)
+                energy_share_long["PERIOD"] = i
+                energy_share_long = energy_share_long.rename(
+                    columns={
+                        "variable": "ESR_PROGRAM",
+                        "Region_description": "load_zone",
+                        "value": "rps_share",
+                    }
+                )
+                energy_share_long = energy_share_long[
+                    ["ESR_PROGRAM", "PERIOD", "load_zone", "rps_share"]
+                ]
+                energy_share_long.to_csv(
+                    out_folder / "ESR_requirement.csv", index=False
+                )
+
+    # interest and discount rates in financials.csv
     financials_table = pd.DataFrame(
         {"base_financial_year": [first_year_settings["atb_data_year"]]}
     )
@@ -1038,6 +1146,7 @@ def other_tables(
                 f"\nNo {name} setting found (usually in switch_params.yml); "
                 f"using default value of {default}."
             )
+    financials_table.to_csv(out_folder / "financials.csv", index=False)
 
     periods_data = {
         "INVESTMENT_PERIOD": scen_settings_dict.keys(),
@@ -1046,13 +1155,8 @@ def other_tables(
         ],
         "period_end": scen_settings_dict.keys(),  # convention for MIP studies
     }
-
     periods_table = pd.DataFrame(periods_data)
-    periods_table
-    # write switch version txt file
-    file = open(out_folder / "switch_inputs_version.txt", "w")
-    file.write("2.0.7")
-    file.close()
+    periods_table.to_csv(out_folder / "periods.csv", index=False)
 
     # this could potentially have different Voll for different segments, and it's
     # not clear what the difference is between the Voll and $/MWh columns. For
@@ -1061,11 +1165,11 @@ def other_tables(
     lost_load_cost_table = pd.DataFrame(
         {"unserved_load_penalty": [demand_segments.loc[:, "Voll"].mean()]}
     )
-
-    carbon_policies_table.to_csv(out_folder / "carbon_policies.csv", index=False)
-    financials_table.to_csv(out_folder / "financials.csv", index=False)
-    periods_table.to_csv(out_folder / "periods.csv", index=False)
     lost_load_cost_table.to_csv(out_folder / "lost_load_cost.csv", index=False)
+
+    # write switch version txt file
+    with open(out_folder / "switch_inputs_version.txt", "w") as file:
+        file.write("2.0.7")
 
 
 from powergenome.generators import load_ipm_shapefile
