@@ -1059,56 +1059,72 @@ def other_tables(
 
     if first_year_settings.get("emission_policies_fn"):
 
-        # create carbon_policies.csv file to define a single carbon cap across all
-        # regions (users can turn this on or off by including the carbon_policies
-        # module)
-        co2_rows = []
-        for my, scen_settings in scen_settings_dict.items():
-            co2_cap = create_policy_req(scen_settings, col_str_match="CO_2_Max_Mtons")
-            co2_rows.append(
-                {
-                    "period": my,
-                    # Mton to ton, the unit in PG is Mton; column name need to be updated.
-                    "carbon_cap_tco2_per_yr": co2_cap["CO_2_Max_Mtons_1"].sum()
-                    * 1000000,
-                    "carbon_cost_dollar_per_tco2": scen_settings.get(
-                        "carbon_cost_dollar_per_tco2", "."
-                    ),
-                }
+        # create carbon_policies.csv and carbon_policies_regional.csv
+        dfs = []
+        carbon_cost = {}
+        # gather data across years
+        for model_year, scen_settings in scen_settings_dict.items():
+            co2_cap = create_policy_req(scen_settings, col_str_match="CO_2_")
+            if co2_cap is not None:
+                co2_cap["PERIOD"] = model_year
+                dfs.append(co2_cap)
+            carbon_cost[model_year] = scen_settings.get(
+                "carbon_cost_dollar_per_tco2", "."
+            )
+        # aggregate annual data and format as needed
+        if dfs:
+            co2_cap = pd.concat(dfs, axis=0)
+            # mask out caps for regions that aren't participating in programs
+            co2_target_cols = [
+                c for c in co2_cap.columns if c.startswith("CO_2_Max_Mtons_")
+            ]
+            for tc in co2_target_cols:
+                participate = co2_cap[
+                    tc.replace("CO_2_Max_Mtons_", "CO_2_Cap_Zone_")
+                ].astype(bool)
+                co2_cap.loc[~participate, tc] = float("nan")
+            # rescale caps from millions of tonnes to tonnes
+            co2_cap[co2_target_cols] *= 1000000
+            # keep only necessary columns
+            co2_cap = co2_cap[["Region_description", "PERIOD"] + co2_target_cols]
+            # repurpose the target names as program names
+            co2_cap.columns = co2_cap.columns.str.replace("CO_2_Max_Mtons_", "ETS ")
+            # rename as needed
+            co2_cap = co2_cap.rename({"Region_description": "LOAD_ZONE"}, axis=1)
+            # switch from wide to long format and drop the non-participants
+            co2_cap_long = co2_cap.melt(
+                id_vars=["LOAD_ZONE", "PERIOD"],
+                var_name="CO2_PROGRAM",
+                value_name="zone_co2_cap",
+            ).dropna(subset=["zone_co2_cap"])
+            # reorder the columns for Switch
+            co2_cap_long = co2_cap_long[
+                ["CO2_PROGRAM", "PERIOD", "LOAD_ZONE", "zone_co2_cap"]
+            ]
+
+            co2_cap_long.to_csv(
+                out_folder / "carbon_policies_regional.csv", index=False
             )
 
-        carbon_policies_table = pd.DataFrame.from_records(co2_rows)
-        carbon_policies_table.to_csv(out_folder / "carbon_policies.csv", index=False)
-
-        # create carbon_policies_regional.csv with policies on a regional basis
-        for i, scen_settings in scen_settings_dict.items():
-            # TODO: aggregate across years instead of writing each year separately
-            co2_cap = create_policy_req(scen_settings, col_str_match="CO_2_Max_Mtons")
-            if co2_cap is not None:
-                # co2_cap = co2_cap.set_index("Region_description")
-                co2_cap.index.name = None
-                # need to update "CO2_PROGRAM" column in case of multiple carbon policy is applying,
-                # for now, since there is only one program, input anay random number/ string: "one" for example.
-                co2_cap["CO2_PROGRAM"] = "one"
-                co2_cap["PERIOD"] = i
-                co2_cap = pd.DataFrame(co2_cap)
-                co2_cap.rename(
-                    columns={
-                        "Region_description": "LOAD_ZONE",
-                        "CO_2_Max_Mtons_1": "zone_co2_cap",
-                    },
-                    inplace=True,
+            # also create an all-region cap for use with standard(ish) Switch
+            if "ETS 1" in co2_cap.columns:
+                co2_cap_all_regions = (
+                    co2_cap.groupby("PERIOD")[["ETS 1"]].sum().reset_index()
                 )
-                #  CHECK the data,whether there are zeros. if there are zeros and they referer to no policy
-                # requirement in a specific zone. change zero to "." for switch inputs in a mean of infinity.
-                co2_cap.loc[co2_cap["zone_co2_cap"] == 0, "zone_co2_cap"] = "."
-                co2_cap = co2_cap[
-                    ["CO2_PROGRAM", "PERIOD", "LOAD_ZONE", "zone_co2_cap"]
-                ]
+                co2_cap_all_regions["carbon_cost_dollar_per_tco2"] = (
+                    co2_cap_all_regions["PERIOD"].map(carbon_cost)
+                )
+                co2_cap_all_regions = co2_cap_all_regions.rename(
+                    {"ETS 1": "carbon_cap_tco2_per_yr"}, axis=1
+                )
+                co2_cap_all_regions.to_csv(
+                    out_folder / "carbon_policies.csv", index=False
+                )
 
-                co2_cap.to_csv(out_folder / "carbon_policies_regional.csv", index=False)
-
-            # create ESR_requirement.csv with clean energy standards / RPS requirements
+        # create ESR_requirement.csv with clean energy standards / RPS requirements
+        dfs = []
+        # gather data across years
+        for model_year, scen_settings in scen_settings_dict.items():
             energy_share_req = create_policy_req(scen_settings, col_str_match="ESR")
             if energy_share_req is not None:
                 ESR_col = [
@@ -1118,7 +1134,7 @@ def other_tables(
                     energy_share_req, id_vars=["Region_description"], value_vars=ESR_col
                 )
                 energy_share_long = pd.DataFrame(energy_share_long)
-                energy_share_long["PERIOD"] = i
+                energy_share_long["PERIOD"] = model_year
                 energy_share_long = energy_share_long.rename(
                     columns={
                         "variable": "ESR_PROGRAM",
@@ -1129,9 +1145,11 @@ def other_tables(
                 energy_share_long = energy_share_long[
                     ["ESR_PROGRAM", "PERIOD", "load_zone", "rps_share"]
                 ]
-                energy_share_long.to_csv(
-                    out_folder / "ESR_requirement.csv", index=False
-                )
+                dfs.append(energy_share_long)
+        # aggregate across years
+        if dfs:
+            energy_share_long = pd.concat(dfs, axis=1)
+            energy_share_long.to_csv(out_folder / "ESR_requirement.csv", index=False)
 
     # interest and discount rates in financials.csv
     financials_table = pd.DataFrame(
@@ -1531,7 +1549,6 @@ def main(
         to_run = list(case_settings.items())
 
     # Run through the different cases and save files in a new folder for each.
-    # (Should switch the case_id/year layers in scenario settings dictionary.)
     for c, scen_settings_dict in to_run:
         # c is case_id for this case
         # scen_settings_dict has all settings for this case, organized by year
@@ -1542,39 +1559,38 @@ def main(
         first_year_settings = first_value(scen_settings_dict)
         final_year_settings = final_value(scen_settings_dict)
 
-        # # retrieve gc for this case, using settings for first year so we get all
-        # # plants that survive up to that point (using last year would exclude
-        # # plants that retire during the study)
-        # gc = GeneratorClusters(pudl_engine, pudl_out, pg_engine, first_year_settings)
+        # retrieve gc for this case, using settings for first year so we get all
+        # plants that survive up to that point (using last year would exclude
+        # plants that retire during the study)
+        gc = GeneratorClusters(pudl_engine, pudl_out, pg_engine, first_year_settings)
 
-        # # gc.fuel_prices already spans all years. We assume any added fuels show
-        # # up in the last year of the study. Then add_user_fuel_prices() adds them
-        # # to all years of the study (it only accepts one price for all years).
-        # all_fuel_prices = add_user_fuel_prices(final_year_settings, gc.fuel_prices)
+        # gc.fuel_prices already spans all years. We assume any added fuels show
+        # up in the last year of the study. Then add_user_fuel_prices() adds them
+        # to all years of the study (it only accepts one price for all years).
+        all_fuel_prices = add_user_fuel_prices(final_year_settings, gc.fuel_prices)
 
-        # # generate Switch input tables from the PowerGenome settings/data
-        # gen_prebuild_newbuild_info_files(
-        #     gc,
-        #     all_fuel_prices,
-        #     pudl_engine,
-        #     scen_settings_dict,
-        #     case_folder,
-        #     pg_engine,
-        #     hydro_variability_new,
-        # )
-        # fuel_files(
-        #     fuel_prices=all_fuel_prices,
-        #     planning_years=list(scen_settings_dict.keys()),
-        #     regions=final_year_settings["model_regions"],
-        #     fuel_region_map=final_year_settings["aeo_fuel_region_map"],
-        #     fuel_emission_factors=final_year_settings["fuel_emission_factors"],
-        #     out_folder=case_folder,
-        # )
+        # generate Switch input tables from the PowerGenome settings/data
+        gen_prebuild_newbuild_info_files(
+            gc,
+            all_fuel_prices,
+            pudl_engine,
+            scen_settings_dict,
+            case_folder,
+            pg_engine,
+            hydro_variability_new,
+        )
+        fuel_files(
+            fuel_prices=all_fuel_prices,
+            planning_years=list(scen_settings_dict.keys()),
+            regions=final_year_settings["model_regions"],
+            fuel_region_map=final_year_settings["aeo_fuel_region_map"],
+            fuel_emission_factors=final_year_settings["fuel_emission_factors"],
+            out_folder=case_folder,
+        )
         other_tables(
             scen_settings_dict=scen_settings_dict,
             out_folder=case_folder,
         )
-
         transmission_tables(
             scen_settings_dict,
             case_folder,
