@@ -11,7 +11,10 @@ __pycache__/
 .spyproject
 
 # VS Code settings
-**/.vscode
+.vscode
+
+# log files
+*.log
 
 # Ignore all subdirectories (generally pipeline outputs) except a few
 */

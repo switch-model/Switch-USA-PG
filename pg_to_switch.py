@@ -474,51 +474,42 @@ def gen_projects_info_file(
         columns={"total_capacity": "gen_capacity_limit_mw"}, inplace=True
     )
     gen_project_info = gen_project_info.drop_duplicates(subset="GENERATION_PROJECT")
-    # SWITCH 2.0.7 changes file name from  "generation_projects_info.csv" to "gen_info.csv"
-    gen_project_info.to_csv(out_folder / "gen_info.csv", index=False)
 
-    ###############################################################
-    ###### make tables for current policy (2030) of rps requirement.
+    # identify generators participating in ESR or minimum capacity programs,
+    # then drop those columns
     ESR_col = [col for col in gen_project_info.columns if col.startswith("ESR")]
-    ESR_generators = gen_project_info[
-        [
-            col
-            for col in gen_project_info
-            if col.startswith("ESR") or col == "GENERATION_PROJECT"
-        ]
-    ]
-    ESR_generators_long = pd.melt(
-        ESR_generators, id_vars=["GENERATION_PROJECT"], value_vars=ESR_col
-    )
-    ESR_generators_long["PERIOD"] = settings.get("model_year")
-    ESR_generators_long = ESR_generators_long[ESR_generators_long["value"] == 1].rename(
-        columns={"variable": "ESR_PROGRAM", "GENERATION_PROJECT": "esr_gen"}
-    )
-    ESR_generators_long = ESR_generators_long[["ESR_PROGRAM", "PERIOD", "esr_gen"]]
-    ESR_generators_long.to_csv(out_folder / "ESR_generators.csv", index=False)
-
-    ###### make tables for current policy (2030) of offshore wind capacity requirement.
+    ESR_generators = gen_project_info[["GENERATION_PROJECT"] + ESR_col]
     min_cap_col = [
         col for col in gen_project_info.columns if col.startswith("MinCapTag")
     ]
-    min_cap_generators = gen_project_info[
-        [
-            col
-            for col in gen_project_info
-            if col.startswith("MinCapTag") or col == "GENERATION_PROJECT"
-        ]
-    ]
-    min_cap_generators_long = pd.melt(
-        min_cap_generators, id_vars=["GENERATION_PROJECT"], value_vars=min_cap_col
+    min_cap_gens = gen_project_info[["GENERATION_PROJECT"] + min_cap_col]
+    gen_project_info = gen_project_info.drop(columns=ESR_col + min_cap_col)
+
+    # SWITCH 2.0.7 changes file name from  "generation_projects_info.csv" to "gen_info.csv"
+    gen_project_info.to_csv(out_folder / "gen_info.csv", index=False)
+
+    # create esr_generators.csv: list of generators participating in ESR (RPS/CES) programs
+    ESR_generators_long = pd.melt(
+        ESR_generators, id_vars=["GENERATION_PROJECT"], value_vars=ESR_col
     )
-    min_cap_generators_long["PERIOD"] = settings.get("model_year")
+    ESR_generators_long = ESR_generators_long[ESR_generators_long["value"] == 1].rename(
+        columns={"variable": "ESR_PROGRAM", "GENERATION_PROJECT": "ESR_GEN"}
+    )
+    ESR_generators_long = ESR_generators_long[["ESR_PROGRAM", "ESR_GEN"]]
+    ESR_generators_long.to_csv(out_folder / "esr_generators.csv", index=False)
+
+    # make min_cap_generators.csv, showing generators that can help satisfy
+    # minimum capacity rules
+    min_cap_generators_long = pd.melt(
+        min_cap_gens, id_vars=["GENERATION_PROJECT"], value_vars=min_cap_col
+    )
     min_cap_generators_long = min_cap_generators_long[
         min_cap_generators_long["value"] == 1
     ].rename(
         columns={"variable": "MIN_CAP_PROGRAM", "GENERATION_PROJECT": "MIN_CAP_GEN"}
     )
     min_cap_generators_long = min_cap_generators_long[
-        ["MIN_CAP_PROGRAM", "PERIOD", "MIN_CAP_GEN"]
+        ["MIN_CAP_PROGRAM", "MIN_CAP_GEN"]
     ]
     min_cap_generators_long.to_csv(out_folder / "min_cap_generators.csv", index=False)
     ###############################################################
@@ -1121,7 +1112,7 @@ def other_tables(
                     out_folder / "carbon_policies.csv", index=False
                 )
 
-        # create ESR_requirement.csv with clean energy standards / RPS requirements
+        # create esr_requirements.csv with clean energy standards / RPS requirements
         dfs = []
         # gather data across years
         for model_year, scen_settings in scen_settings_dict.items():
@@ -1145,11 +1136,34 @@ def other_tables(
                 energy_share_long = energy_share_long[
                     ["ESR_PROGRAM", "PERIOD", "load_zone", "rps_share"]
                 ]
+                # drop the zero-value rows (no policy in effect)
+                energy_share_long = energy_share_long.query("rps_share != 0")
                 dfs.append(energy_share_long)
         # aggregate across years
         if dfs:
-            energy_share_long = pd.concat(dfs, axis=1)
-            energy_share_long.to_csv(out_folder / "ESR_requirement.csv", index=False)
+            energy_share_long = pd.concat(dfs, axis=0)
+            energy_share_long.to_csv(out_folder / "esr_requirements.csv", index=False)
+
+        # create min_cap_requirements.csv with minimum capacity requirements for
+        # some technologies
+        dfs = []
+        # gather data across years
+        for model_year, scen_settings in scen_settings_dict.items():
+            mcr = min_cap_req(scen_settings)
+            if mcr is not None:
+                mcr["PERIOD"] = model_year
+                mcr = mcr.rename(
+                    columns={
+                        "Constraint_Description": "MIN_CAP_PROGRAM",
+                        "Min_MW": "min_cap_mw",
+                    }
+                )
+                mcr = mcr[["MIN_CAP_PROGRAM", "PERIOD", "min_cap_mw"]]
+                dfs.append(mcr)
+        # aggregate across years
+        if dfs:
+            mcr = pd.concat(dfs, axis=0)
+            mcr.to_csv(out_folder / "min_cap_requirements.csv", index=False)
 
     # interest and discount rates in financials.csv
     financials_table = pd.DataFrame(

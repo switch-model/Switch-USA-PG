@@ -27,24 +27,30 @@ generators.core.commit package.
 def define_components(m):
     """
     ESR_PROGRAM is a set of program/regions that have target shares of "clean energy".
-    PERIOD is a subset of PERIODS for which RPS goals are defined.
-    esr_gen is a set of generators that are eligible for producing "clean energy"(RPS-eligible).
+    ESR_GEN is a set of generators that are eligible for producing "clean energy"(RPS-eligible).
 
     load_zone is a subset of model regions where RPS goals are defined.
     rps_share[z in load_zone] is the fraction of total generated energy in
         a period in a zone that has to be provided by RPS-elegible generators.
     """
-    # indexing set for the zonal cap: (program, period, zone) combination
-    # (These are all the index columns from carbon_policies_regional.csv.)
+    # indexing set for the zonal requirements: (program, period, zone) combination
+    # (These are all the index columns from esr_requirement.csv.)
     m.ESR_RULES = Set(dimen=3, within=Any * m.PERIODS * m.LOAD_ZONES)
 
     # share target specified for each (program, period, zone) combination
     m.rps_share = Param(m.ESR_RULES, default=float("inf"), within=Reals)
 
+    # set of ESR programs
+    m.ESR_PROGRAMS = Set(initialize=unique_list(pr for pr, pe in m.ESR_RULES))
+
     # names of all the ESR programs and periods when they are in effect;
     # each unique pair of values in the first two columns of
     # ESR_requirement.csv is a (program, period) combo
-    m.ESR_PROGRAM_PERIODS = Set(dimen=2, within=Any * m.PERIODS)
+    m.ESR_PROGRAM_PERIODS = Set(
+        dimen=2,
+        within=Any * m.PERIODS,
+        initialize=lambda m: unique_list(() for pr, pe, z in m.ESR_RULES),
+    )
 
     # set of zones that participate in a particular ESR program in a particular period
     m.ZONES_IN_ESR_PROGRAM_PERIOD = Set(
@@ -57,30 +63,40 @@ def define_components(m):
 
     m.ESR_PROGRAM_IN_PERIOD = Set(
         dimen=1,
-        initialize=lambda m, p: unique_list((pr) for (pr, p) in m.ESR_PROGRAM_PERIODS),
+        initialize=lambda m, pe: unique_list(
+            _pr for (_pr, _pe) in m.ESR_PROGRAM_PERIODS if _pe == pe
+        ),
     )
 
-    m.esr_gen = Param(m.ESR_PROGRAM_PERIODS, within=m.GENERATION_PROJECTS)
+    # set of all valid program/generator combinations (i.e., gens participating
+    # in each program)
+    m.ESR_PROGRAM_GENS = Set(within=m.ESR_PROGRAMS * m.GENERATION_PROJECTS)
+    m.GENS_IN_ESR_PROGRAM = Param(
+        m.ESR_PROGRAMS,
+        within=m.GENERATION_PROJECTS,
+        initialize=lambda m, pr: unique_list(
+            _g for (_pr, _g) in m.ESR_PROGRAM_GENS if _pr == pr
+        ),
+    )
 
     # enforce constraint on regional rps energy share in each program for zones in each period
-    def rule(m, p, z):
+    def rule(m, pr, pe):
         # zonal demand for this program/period
         zonal_demand_share = sum(
-            m.rps_share[pr, p, z] * m.zone_total_demand_in_period_mwh(z, p)
-            for pr in m.ESR_PROGRAM_IN_PERIOD[p]
+            m.rps_share[pr, pe] * m.zone_total_demand_in_period_mwh[z, pe]
+            for z in m.ZONES_IN_ESR_PROGRAM_PERIOD[pr, pe]
         )
 
-        # sum of annual dispatched energy for gens in this program in this period of zone z
-        ELIGIBLE_Energy = sum(
+        # sum of annual dispatched energy for gens in this program in this period
+        EligibleEnergy = sum(
             m.DispatchGen[g, t] * m.tp_weight[t]
-            for g in m.esr_gen[pr, p]
-            if g in m.GENS_IN_ZONE[z] and z in m.ZONES_IN_ESR_PROGRAM_PERIOD[pr, p]
-            for t in m.TPS_FOR_GEN_IN_PERIOD[g, p]
-            for pr in m.ESR_PROGRAM_IN_PERIOD[p]
+            for g in m.GENS_IN_ESR_PROGRAM[pr]
+            if g in m.GENS_IN_PERIOD[pe]
+            for t in m.TPS_FOR_GEN_IN_PERIOD[g, pe]
         )
 
         # define and return the constraint
-        return ELIGIBLE_Energy >= zonal_demand_share
+        return EligibleEnergy >= zonal_demand_share
 
     m.Enforce_rps_share = Constraint(m.ESR_PROGRAM_PERIODS, rule=rule)
 
@@ -92,22 +108,21 @@ def load_inputs(mod, switch_data, inputs_dir):
     specify targets for all periods.
 
     Mandatory input files:
-        ESR_generators.csv
-            ESR_PROGRAM, PERIOD, esr_gen
+        esr_generators.csv
+            ESR_PROGRAM, ESR_GEN
 
-        ESR_requirement.csv:
+        esr_requirement.csv:
            ESR_PROGRAM, PERIOD, load_zone, rps_share
 
     """
 
     switch_data.load_aug(
-        filename=os.path.join(inputs_dir, "ESR_generators.csv"),
-        index=mod.ESR_PROGRAM_PERIODS,
-        param=(mod.esr_gen,),
+        filename=os.path.join(inputs_dir, "esr_generators.csv"),
+        set=mod.ESR_PROGRAM_GENS,
     )
 
     switch_data.load_aug(
-        filename=os.path.join(inputs_dir, "ESR_requirement.csv"),
+        filename=os.path.join(inputs_dir, "esr_requirements.csv"),
         index=mod.ESR_RULES,
         param=(mod.rps_share,),
     )
