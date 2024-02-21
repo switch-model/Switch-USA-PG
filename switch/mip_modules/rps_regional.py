@@ -40,16 +40,18 @@ def define_components(m):
     # share target specified for each (program, period, zone) combination
     m.rps_share = Param(m.ESR_RULES, default=float("inf"), within=Reals)
 
-    # set of ESR programs
-    m.ESR_PROGRAMS = Set(initialize=unique_list(pr for pr, pe in m.ESR_RULES))
-
     # names of all the ESR programs and periods when they are in effect;
     # each unique pair of values in the first two columns of
     # ESR_requirement.csv is a (program, period) combo
     m.ESR_PROGRAM_PERIODS = Set(
         dimen=2,
         within=Any * m.PERIODS,
-        initialize=lambda m: unique_list(() for pr, pe, z in m.ESR_RULES),
+        initialize=lambda m: unique_list((pr, pe) for pr, pe, z in m.ESR_RULES),
+    )
+
+    # set of ESR programs
+    m.ESR_PROGRAMS = Set(
+        initialize=lambda m: unique_list(pr for pr, pe in m.ESR_PROGRAM_PERIODS)
     )
 
     # set of zones that participate in a particular ESR program in a particular period
@@ -61,17 +63,10 @@ def define_components(m):
         ],
     )
 
-    m.ESR_PROGRAM_IN_PERIOD = Set(
-        dimen=1,
-        initialize=lambda m, pe: unique_list(
-            _pr for (_pr, _pe) in m.ESR_PROGRAM_PERIODS if _pe == pe
-        ),
-    )
-
     # set of all valid program/generator combinations (i.e., gens participating
     # in each program)
     m.ESR_PROGRAM_GENS = Set(within=m.ESR_PROGRAMS * m.GENERATION_PROJECTS)
-    m.GENS_IN_ESR_PROGRAM = Param(
+    m.GENS_IN_ESR_PROGRAM = Set(
         m.ESR_PROGRAMS,
         within=m.GENERATION_PROJECTS,
         initialize=lambda m, pr: unique_list(
@@ -83,7 +78,7 @@ def define_components(m):
     def rule(m, pr, pe):
         # zonal demand for this program/period
         zonal_demand_share = sum(
-            m.rps_share[pr, pe] * m.zone_total_demand_in_period_mwh[z, pe]
+            m.rps_share[pr, pe, z] * m.zone_total_demand_in_period_mwh[z, pe]
             for z in m.ZONES_IN_ESR_PROGRAM_PERIOD[pr, pe]
         )
 
@@ -98,7 +93,7 @@ def define_components(m):
         # define and return the constraint
         return EligibleEnergy >= zonal_demand_share
 
-    m.Enforce_rps_share = Constraint(m.ESR_PROGRAM_PERIODS, rule=rule)
+    m.Enforce_RPS_Share = Constraint(m.ESR_PROGRAM_PERIODS, rule=rule)
 
 
 def load_inputs(mod, switch_data, inputs_dir):
@@ -118,11 +113,13 @@ def load_inputs(mod, switch_data, inputs_dir):
 
     switch_data.load_aug(
         filename=os.path.join(inputs_dir, "esr_generators.csv"),
+        optional=True,  # also enables empty files
         set=mod.ESR_PROGRAM_GENS,
     )
 
     switch_data.load_aug(
         filename=os.path.join(inputs_dir, "esr_requirements.csv"),
+        optional=True,  # also enables empty files
         index=mod.ESR_RULES,
         param=(mod.rps_share,),
     )

@@ -31,12 +31,14 @@ def define_components(m):
     # minimum capacity specified for each (program, period) combination
     m.min_cap_mw = Param(m.MIN_CAP_RULES, within=Reals)
     # set of all minimum-capacity programs
-    m.MIN_CAP_PROGRAMS = Set(initialize=unique_list(pr for pr, pe in m.MIN_CAP_RULES))
+    m.MIN_CAP_PROGRAMS = Set(
+        initialize=lambda m: unique_list(pr for pr, pe in m.MIN_CAP_RULES)
+    )
 
     # set of all valid program/generator combinations (i.e., gens participating
     # in each program)
     m.MIN_CAP_PROGRAM_GENS = Set(within=m.MIN_CAP_PROGRAMS * m.GENERATION_PROJECTS)
-    m.GENS_IN_MIN_CAP_PROGRAM = Param(
+    m.GENS_IN_MIN_CAP_PROGRAM = Set(
         m.MIN_CAP_PROGRAMS,
         within=m.GENERATION_PROJECTS,
         initialize=lambda m, pr: unique_list(
@@ -70,10 +72,12 @@ def load_inputs(model, switch_data, inputs_dir):
     """
     switch_data.load_aug(
         filename=os.path.join(inputs_dir, "min_cap_requirements.csv"),
+        optional=True,  # also enables empty files
         index=model.MIN_CAP_RULES,
-        params=(model.min_cap_mw),
+        param=(model.min_cap_mw,),
     )
     switch_data.load_aug(
         filename=os.path.join(inputs_dir, "min_cap_generators.csv"),
+        optional=True,  # also enables empty files
         set=model.MIN_CAP_PROGRAM_GENS,
     )

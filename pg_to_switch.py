@@ -1038,9 +1038,6 @@ def gen_prebuild_newbuild_info_files(
     gen_build_costs.to_csv(out_folder / "gen_build_costs.csv", index=False)
 
 
-### edit by RR
-
-
 def other_tables(
     scen_settings_dict,
     out_folder,
@@ -1050,70 +1047,84 @@ def other_tables(
 
     if first_year_settings.get("emission_policies_fn"):
 
-        # create carbon_policies.csv and carbon_policies_regional.csv
-        dfs = []
-        carbon_cost = {}
+        # create carbon_policies_regional.csv
+        dfs = [
+            # start with a dummy data frame, so we always get some output
+            pd.DataFrame(
+                columns=[
+                    "CO2_PROGRAM",
+                    "PERIOD",
+                    "LOAD_ZONE",
+                    "carbon_cap_tco2_per_yr",
+                    "carbon_cost_dollar_per_tco2",
+                ]
+            )
+        ]
         # gather data across years
         for model_year, scen_settings in scen_settings_dict.items():
             co2_cap = create_policy_req(scen_settings, col_str_match="CO_2_")
             if co2_cap is not None:
                 co2_cap["PERIOD"] = model_year
-                dfs.append(co2_cap)
-            carbon_cost[model_year] = scen_settings.get(
-                "carbon_cost_dollar_per_tco2", "."
-            )
-        # aggregate annual data and format as needed
-        if dfs:
-            co2_cap = pd.concat(dfs, axis=0)
-            # mask out caps for regions that aren't participating in programs
-            co2_target_cols = [
-                c for c in co2_cap.columns if c.startswith("CO_2_Max_Mtons_")
-            ]
-            for tc in co2_target_cols:
-                participate = co2_cap[
-                    tc.replace("CO_2_Max_Mtons_", "CO_2_Cap_Zone_")
-                ].astype(bool)
-                co2_cap.loc[~participate, tc] = float("nan")
-            # rescale caps from millions of tonnes to tonnes
-            co2_cap[co2_target_cols] *= 1000000
-            # keep only necessary columns
-            co2_cap = co2_cap[["Region_description", "PERIOD"] + co2_target_cols]
-            # repurpose the target names as program names
-            co2_cap.columns = co2_cap.columns.str.replace("CO_2_Max_Mtons_", "ETS ")
-            # rename as needed
-            co2_cap = co2_cap.rename({"Region_description": "LOAD_ZONE"}, axis=1)
-            # switch from wide to long format and drop the non-participants
-            co2_cap_long = co2_cap.melt(
-                id_vars=["LOAD_ZONE", "PERIOD"],
-                var_name="CO2_PROGRAM",
-                value_name="zone_co2_cap",
-            ).dropna(subset=["zone_co2_cap"])
-            # reorder the columns for Switch
-            co2_cap_long = co2_cap_long[
-                ["CO2_PROGRAM", "PERIOD", "LOAD_ZONE", "zone_co2_cap"]
-            ]
+                # mask out caps for regions that aren't participating in programs
+                co2_target_cols = [
+                    c for c in co2_cap.columns if c.startswith("CO_2_Max_Mtons_")
+                ]
+                for tc in co2_target_cols:
+                    participate = co2_cap[
+                        tc.replace("CO_2_Max_Mtons_", "CO_2_Cap_Zone_")
+                    ].astype(bool)
+                    co2_cap.loc[~participate, tc] = float("nan")
+                # rescale caps from millions of tonnes to tonnes
+                co2_cap[co2_target_cols] *= 1000000
+                # keep only necessary columns
+                co2_cap = co2_cap[["Region_description", "PERIOD"] + co2_target_cols]
+                # convert existing cols into load zones and program names
+                co2_cap = co2_cap.rename(columns={"Region_description": "LOAD_ZONE"})
+                co2_cap.columns = co2_cap.columns.str.replace("CO_2_Max_Mtons_", "ETS ")
+                # switch from wide to long format and drop the non-participants
+                co2_cap_long = co2_cap.melt(
+                    id_vars=["LOAD_ZONE", "PERIOD"],
+                    var_name="CO2_PROGRAM",
+                    value_name="carbon_cap_tco2_per_yr",
+                ).dropna(subset=["carbon_cap_tco2_per_yr"])
+                # Add the carbon cost if available
+                co2_cap_long["carbon_cost_dollar_per_tco2"] = scen_settings.get(
+                    "carbon_cost_dollar_per_tco2", "."
+                )
+                # reorder the columns for Switch
+                co2_cap_long = co2_cap_long[dfs[0].columns]
+                dfs.append(co2_cap_long)
 
-            co2_cap_long.to_csv(
-                out_folder / "carbon_policies_regional.csv", index=False
-            )
+        # aggregate annual data and write to file
+        co2_cap_long = pd.concat(dfs, axis=0)
+        co2_cap_long.to_csv(out_folder / "carbon_policies_regional.csv", index=False)
 
-            # also create an all-region cap for use with standard(ish) Switch
-            if "ETS 1" in co2_cap.columns:
-                co2_cap_all_regions = (
-                    co2_cap.groupby("PERIOD")[["ETS 1"]].sum().reset_index()
-                )
-                co2_cap_all_regions["carbon_cost_dollar_per_tco2"] = (
-                    co2_cap_all_regions["PERIOD"].map(carbon_cost)
-                )
-                co2_cap_all_regions = co2_cap_all_regions.rename(
-                    {"ETS 1": "carbon_cap_tco2_per_yr"}, axis=1
-                )
-                co2_cap_all_regions.to_csv(
-                    out_folder / "carbon_policies.csv", index=False
-                )
+        # create carbon_policies.csv (possibly empty), an all-region cap for use
+        # with switch_model.policies.carbon_policies or
+        # mip_modules.carbon_policies
+        co2_cap = co2_cap_long.query('CO2_PROGRAM == "ETS 1"')
+        co2_cap_all_regions = (
+            co2_cap.groupby("PERIOD")
+            .agg(
+                {
+                    "carbon_cap_tco2_per_yr": "sum",
+                    # we use simple mean for cost per tco2, because it is not
+                    # clear how it should be applied overall if it differs
+                    # between regions, since it is only applied to excess beyond
+                    # the target (and in practice, in the code above it will
+                    # always be consistent between regions)
+                    "carbon_cost_dollar_per_tco2": "mean",
+                }
+            )
+            .reset_index()
+        )
+        co2_cap_all_regions.to_csv(out_folder / "carbon_policies.csv", index=False)
 
         # create esr_requirements.csv with clean energy standards / RPS requirements
-        dfs = []
+        dfs = [
+            # start with a dummy data frame with standard columns
+            pd.DataFrame(columns=["ESR_PROGRAM", "PERIOD", "load_zone", "rps_share"])
+        ]
         # gather data across years
         for model_year, scen_settings in scen_settings_dict.items():
             energy_share_req = create_policy_req(scen_settings, col_str_match="ESR")
@@ -1124,7 +1135,6 @@ def other_tables(
                 energy_share_long = pd.melt(
                     energy_share_req, id_vars=["Region_description"], value_vars=ESR_col
                 )
-                energy_share_long = pd.DataFrame(energy_share_long)
                 energy_share_long["PERIOD"] = model_year
                 energy_share_long = energy_share_long.rename(
                     columns={
@@ -1133,37 +1143,55 @@ def other_tables(
                         "value": "rps_share",
                     }
                 )
-                energy_share_long = energy_share_long[
-                    ["ESR_PROGRAM", "PERIOD", "load_zone", "rps_share"]
-                ]
-                # drop the zero-value rows (no policy in effect)
-                energy_share_long = energy_share_long.query("rps_share != 0")
+                # drop the zero-value and nan rows (no policy in effect)
+                energy_share_long.loc[
+                    energy_share_long["rps_share"] == 0, "rps_share"
+                ] = float("nan")
+                energy_share_long = energy_share_long.dropna(subset=["rps_share"])
+                # use standard columns in standard order
+                energy_share_long = energy_share_long[dfs[0].columns]
                 dfs.append(energy_share_long)
+
         # aggregate across years
-        if dfs:
-            energy_share_long = pd.concat(dfs, axis=0)
-            energy_share_long.to_csv(out_folder / "esr_requirements.csv", index=False)
+        energy_share_long = pd.concat(dfs, axis=0)
+        energy_share_long.to_csv(out_folder / "esr_requirements.csv", index=False)
+
+        # remove any generator assignments for inactive ESR programs
+        esr_gens = pd.read_csv(out_folder / "esr_generators.csv")
+        esr_gens = esr_gens.loc[
+            esr_gens["ESR_PROGRAM"].isin(energy_share_long["ESR_PROGRAM"]), :
+        ]
+        esr_gens.to_csv(out_folder / "esr_generators.csv", index=False)
 
         # create min_cap_requirements.csv with minimum capacity requirements for
-        # some technologies
-        dfs = []
+        # some technologies (empty, if no policies defined)
+        dfs = [pd.DataFrame(columns=["MIN_CAP_PROGRAM", "PERIOD", "min_cap_mw"])]
         # gather data across years
         for model_year, scen_settings in scen_settings_dict.items():
             mcr = min_cap_req(scen_settings)
             if mcr is not None:
+                mcr["MIN_CAP_PROGRAM"] = "MinCapTag_" + mcr[
+                    "MinCapReqConstraint"
+                ].astype(str)
                 mcr["PERIOD"] = model_year
                 mcr = mcr.rename(
                     columns={
-                        "Constraint_Description": "MIN_CAP_PROGRAM",
                         "Min_MW": "min_cap_mw",
                     }
                 )
-                mcr = mcr[["MIN_CAP_PROGRAM", "PERIOD", "min_cap_mw"]]
+                # use standard columns in standard order
+                mcr = mcr[dfs[0].columns]
                 dfs.append(mcr)
-        # aggregate across years
-        if dfs:
-            mcr = pd.concat(dfs, axis=0)
-            mcr.to_csv(out_folder / "min_cap_requirements.csv", index=False)
+        # aggregate across years and write to file
+        mcr = pd.concat(dfs, axis=0)
+        mcr.to_csv(out_folder / "min_cap_requirements.csv", index=False)
+
+        # remove any generator assignments for inactive min_cap programs
+        min_cap_gens = pd.read_csv(out_folder / "min_cap_generators.csv")
+        min_cap_gens = min_cap_gens.loc[
+            min_cap_gens["MIN_CAP_PROGRAM"].isin(mcr["MIN_CAP_PROGRAM"]), :
+        ]
+        min_cap_gens.to_csv(out_folder / "min_cap_generators.csv", index=False)
 
     # interest and discount rates in financials.csv
     financials_table = pd.DataFrame(
@@ -1432,6 +1460,19 @@ def balancing_tables(settings, pudl_engine, all_gen, out_folder):
     zone_bal_areas.to_csv(out_folder / "zone_balancing_areas.csv", index=False)
 
 
+def year_name(years):
+    yrs = list(years)  # may be any iterable
+    if len(yrs) > 2:
+        gap = yrs[1] - yrs[0]
+        if all(y2 - y1 == gap for y1, y2 in zip(yrs[:-1], yrs[1:])):
+            # multiple periods, evenly spaced, label as YYYA_YYYZ_NN
+            # where NN is the gap between years
+            return f"{yrs[0]}_{yrs[-1]}_{gap}"
+
+    # all other cases, label as YYYA_YYYB_...
+    return "_".join(str(y) for y in yrs)
+
+
 def main(
     settings_file: str,
     results_folder: str,
@@ -1514,10 +1555,6 @@ def main(
             extra = " matching the requested case_id(s) or year(s)"
         print(f"WARNING: No scenarios{extra} were found in {scen_def_fn}.\n")
     else:
-        print("\nPreparing models for the following cases and years:")
-        print(scenario_definitions[["case_id", "year"]].to_string(index=False))
-        print()
-
         missing = set(case_id).difference(set(scenario_definitions["case_id"]))
         if missing:
             print(
@@ -1544,30 +1581,37 @@ def main(
         for c, case_year_settings in cases.items():
             case_settings.setdefault(c, {})[y] = case_year_settings
 
-    # load hydro_variability_new, and need to add variability for region 'MIS_D_MS'
-    # by copying values from ' MIS_AR'
-    hydro_var = pd.read_csv(input_folder / settings["hydro_variability_fn"])
-    hydro_var["MIS_D_MS"] = hydro_var["MIS_AR"].values
-    hydro_variability_new = hydro_var.copy()
-
     if myopic:
         # run each case/year separately; split the settings for each year into
         # separate dicts and process them individually
         to_run = [
             (c, {y: year_settings})
-            for c, scen_settings_dict in case_settings
+            for c, scen_settings_dict in case_settings.items()
             for y, year_settings in scen_settings_dict.items()
         ]
     else:
         # run all years together within each case
         to_run = list(case_settings.items())
 
+    print("\nPreparing models for the following cases:")
+    for c, scen_settings_dict in to_run:
+        all_years = scen_settings_dict.keys()
+        print(f"{c}: {', '.join(str(y) for y in all_years)}")
+    print()
+
+    # load hydro_variability_new, and need to add variability for region 'MIS_D_MS'
+    # by copying values from ' MIS_AR'
+    hydro_var = pd.read_csv(input_folder / settings["hydro_variability_fn"])
+    hydro_var["MIS_D_MS"] = hydro_var["MIS_AR"].values
+    hydro_variability_new = hydro_var.copy()
+
     # Run through the different cases and save files in a new folder for each.
     for c, scen_settings_dict in to_run:
         # c is case_id for this case
         # scen_settings_dict has all settings for this case, organized by year
-        print(f"\nstarting case {c}")
-        case_folder = out_folder / c
+        all_years = scen_settings_dict.keys()
+        print(f"\nstarting case {c} ({', '.join(str(y) for y in all_years)})")
+        case_folder = out_folder / year_name(all_years) / c
         case_folder.mkdir(parents=True, exist_ok=True)
 
         first_year_settings = first_value(scen_settings_dict)

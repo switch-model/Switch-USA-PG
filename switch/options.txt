@@ -2,5 +2,6 @@
 --inputs-dir 26-zone/in/2030/base_short
 --module-list modules_MIP.txt
 --no-save-solution
+--suffix dual  # avoid solver problems
 --solver gurobi --solver-options-string "method=2"
 --debug

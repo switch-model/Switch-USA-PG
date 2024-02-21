@@ -18,10 +18,16 @@ switch_model.energy_sources.fuel_costs.simple
 switch_model.transmission.transport.build
 switch_model.transmission.transport.dispatch
 #switch_model.policies.carbon_policies
-mip_modules.carbon_policies_RRmod
+# mip_modules.carbon_policies_RRmod
+# next three modules are always used, but may be deactivated by providing
+# empty input files
+mip_modules.carbon_policies_regional
+mip_modules.min_capacity_constraint
+mip_modules.rps_regional
 # mip_modules.carbon_policies_hard
 # switch_model.policies.min_per_tech
 # switch_model.policies.wind_to_solar_ratio
 # switch_model.generators.core.commit.fuel_use
 # switch_model.hawaii.hydrogen
 # switch_model.hawaii.save_results
+mip_modules.switch_patch

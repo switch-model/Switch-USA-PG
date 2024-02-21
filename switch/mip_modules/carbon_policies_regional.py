@@ -6,10 +6,11 @@ carbon_policies_regional.csv shows the caps:
 CO2_PROGRAM: name of the program (there may be multiple)
 PERIOD: period when the cap applies
 LOAD_ZONE: zone participating in the program
-zone_co2_cap: cap for this zone within this program (tCO2/y); carbon can be
+carbon_cap_tco2_per_yr: cap for this zone within this program (tCO2/y); carbon can be
 traded between zones in the same program
 
 """
+
 import os
 from pyomo.environ import (
     Set,
@@ -27,7 +28,7 @@ import switch_model.reporting as reporting
 
 
 def define_components(m):
-    # read in the data, especially zone_co2_cap
+    # read in the data, especially carbon_cap_tco2_per_yr
     # add a constraint that total CO2 emissions in all the zones in each program
     # <= total cap for all zones in that program
 
@@ -36,16 +37,28 @@ def define_components(m):
     m.REGIONAL_CO2_RULES = Set(dimen=3, within=Any * m.PERIODS * m.LOAD_ZONES)
 
     # cap specified for each (program, period, zone) combination
-    m.zone_co2_cap = Param(
+    m.carbon_cap_tco2_per_yr = Param(
         m.REGIONAL_CO2_RULES,
         within=Reals,
         default=float("inf"),
     )
 
-    # give a more helpful error message if data is missing
-    m.min_data_check(
-        "REGIONAL_CO2_RULES",
-        "zone_co2_cap",
+    # cost for any emissions above the limit in each (program, period, zone)
+    m.carbon_cost_dollar_per_tco2 = Param(
+        m.REGIONAL_CO2_RULES,
+        within=Reals,
+        default=float("inf"),
+    )
+
+    # how much to relax the constraint in each program, period, zone
+    m.AnnualCapViolation = Var(
+        m.REGIONAL_CO2_RULES,
+        within=NonNegativeReals,
+        bounds=lambda m, pr, pe, z: (
+            0,
+            # never exceed the cap if no price is specified
+            (0 if m.carbon_cost_dollar_per_tco2[pr, pe, z] == float("inf") else None),
+        ),
     )
 
     # names of all the CO2 programs and periods when they are in effect;
@@ -72,24 +85,30 @@ def define_components(m):
         # sum of zone co2 caps for this program/period
 
         cap = sum(
-            m.zone_co2_cap[pr, pe, z] for z in m.ZONES_IN_CO2_PROGRAM_PERIOD[pr, pe]
+            m.carbon_cap_tco2_per_yr[pr, pe, z]
+            for z in m.ZONES_IN_CO2_PROGRAM_PERIOD[pr, pe]
+        )
+
+        exceedance = sum(
+            m.AnnualCapViolation[pr, pe, z]
+            for z in m.ZONES_IN_CO2_PROGRAM_PERIOD[pr, pe]
         )
 
         # sum of annual emissions for gens in this program in this period
         emissions = sum(
             m.DispatchEmissions[g, tp, f] * m.tp_weight_in_year[tp]
             for z in m.ZONES_IN_CO2_PROGRAM_PERIOD[pr, pe]
-            # need all active fuel-using gens in zone z in period pe
+            # all active fuel-using gens in zone z in period pe
             for g in m.GENS_IN_ZONE[z]
             if g in m.FUEL_BASED_GENS
             for tp in m.TPS_FOR_GEN_IN_PERIOD[g, pe]
             for f in m.FUELS_FOR_GEN[g]
         )
         if cap == float("inf"):
-            Constraint.Skip
+            return Constraint.Skip
         else:
             # define and return the constraint
-            return emissions <= cap
+            return emissions <= cap + exceedance
 
     m.Enforce_Regional_Carbon_Cap = Constraint(m.CO2_PROGRAM_PERIODS, rule=rule)
 
@@ -97,19 +116,34 @@ def define_components(m):
     # constraint to get the clearing price for carbon in each program if wanted
     # (search for 'dual' in switch_model.policies.carbon_policies for that code)
 
+    m.EmissionsCost = Expression(
+        m.PERIODS,
+        rule=lambda m, pe: sum(
+            m.AnnualCapViolation[_pr, _pe, _z]
+            * m.carbon_cost_dollar_per_tco2[_pr, _pe, _z]
+            for (_pr, _pe) in m.CO2_PROGRAM_PERIODS
+            if _pe == pe
+            for _z in m.ZONES_IN_CO2_PROGRAM_PERIOD[_pr, _pe]
+            # assume no relaxation if cost per tonne is infinite (omitted)
+            if m.carbon_cost_dollar_per_tco2[_pr, _pe, _z] != float("inf")
+        ),
+        doc="Calculates the carbon cost for generation-related emissions.",
+    )
+    m.Cost_Components_Per_Period.append("EmissionsCost")
 
-def load_inputs(model, switch_data, inputs_dir):
+
+def load_inputs(m, switch_data, inputs_dir):
     """
     Expected input files:
     carbon_policies_regional.csv
-        CO2_PROGRAM, PERIODS, LOAD_ZONES, zone_co2_cap
+        CO2_PROGRAM, PERIODS, LOAD_ZONES, carbon_cap_tco2_per_yr
 
     """
     switch_data.load_aug(
         filename=os.path.join(inputs_dir, "carbon_policies_regional.csv"),
-        optional=True,
-        index=model.REGIONAL_CO2_RULES,
-        params=(model.zone_co2_cap),
+        optional=True,  # also enables empty files
+        index=m.REGIONAL_CO2_RULES,
+        param=(m.carbon_cap_tco2_per_yr, m.carbon_cost_dollar_per_tco2),
     )
 
 

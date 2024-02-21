@@ -75,7 +75,7 @@ Run these commands in the terminal pane.
 
 ```
 # create a minimal switch-pg environement with enough to bootstrap the rest
-conda create -y -c conda-forge -n switch-pg mamba git ipykernel
+conda create -y -c conda-forge -n switch-pg python=3.10 mamba git ipykernel
 conda activate switch-pg
 
 # clone this repository and the dependency submodules (PowerGenome and MIP_results_comparison)
