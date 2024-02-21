@@ -1,3 +1,14 @@
+# Ignore all subdirectories (generally pipeline outputs) except a few
+# (must be at the top to avoid unignoring previously ignored files in these
+# directories)
+*/
+!switch/
+!switch/*
+!PowerGenome/
+!PowerGenome/**
+!MIP_results_comparison/
+!MIP_results_comparison/**
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
@@ -15,15 +26,6 @@ __pycache__/
 
 # log files
 *.log
-
-# Ignore all subdirectories (generally pipeline outputs) except a few
-*/
-!switch/
-!switch/*
-!PowerGenome/
-!PowerGenome/**
-!MIP_results_comparison/
-!MIP_results_comparison/**
 
 # macOS metadata (can make repository impossible to clone on Windows
 Icon?
