@@ -1,10 +1,11 @@
 # Introduction
 
 The sections below show how to use this repository. Note that this will take
-about 14 GB of storage on your computer before you get started, mainly for the
-`MIP_results_comparison` sub-repository, which holds one copy of all the
-comparison data (6.2 GB) in the active file system and one copy in the
-underlying git database.
+about 20 GB of storage on your computer before you start generating model
+inputs. This is mainly used by the `MIP_results_comparison` sub-repository,
+which holds one copy of all the comparison data (6.2 GB) in the active file
+system and one copy in the underlying git database, and also by the PowerGenome
+input files that will be stored in the `pg_data` directory (9.2 GB).
 
 # Install miniconda
 Download from https://docs.conda.io/projects/miniconda/en/latest/
@@ -131,12 +132,13 @@ DISTRIBUTED_GEN_DATA="<Switch-USA-PG>/pg_data/PowerGenome Data Files"
 # RESOURCE_GROUPS=<not set>
 ```
 
-Also open the
-`MIP_results_comparison/case_settings/26-zone/settings/resources.yml` file and
-change the `RESOURCE_GROUPS:` setting to
-`"<Switch-USA-PG>/pg_data/corrected-20z-resource-groups"` (replace
-`<Switch-USA-PG>` with the path to your `Switch-USA-PG` directory).
+Also create a `MIP_results_comparison/case_settings/26-zone/settings/env.yml`
+file with the following line (replace`<Switch-USA-PG>` with the path to your
+`Switch-USA-PG` directory) change the `` setting to
 
+```
+RESOURCE_GROUPS: "<Switch-USA-PG>/pg_data/corrected-20z-resource-groups"
+```
 
 ## Notes about PowerGenome scenario configuration
 
@@ -160,21 +162,13 @@ Run these scripts to generate data. (You can run individual ones as needed for
 testing.)
 
 ```
-python pg_to_switch.py MIP_results_comparison/case_settings/26-zone/settings switch/26-zone/in/2030 --case-id base_short --year 2030
-python pg_to_switch.py MIP_results_comparison/case_settings/26-zone/settings switch/26-zone/in/2040 --case-id base_short --year 2040
-python pg_to_switch.py MIP_results_comparison/case_settings/26-zone/settings switch/26-zone/in/2050 --case-id base_short --year 2050
-
-python pg_to_switch.py MIP_results_comparison/case_settings/26-zone/settings switch/26-zone/in/2030 --case-id base_short_no_ccs --year 2030
-python pg_to_switch.py MIP_results_comparison/case_settings/26-zone/settings switch/26-zone/in/2040 --case-id base_short_no_ccs --year 2040
-python pg_to_switch.py MIP_results_comparison/case_settings/26-zone/settings switch/26-zone/in/2050 --case-id base_short_no_ccs --year 2050
-
-python pg_to_switch.py MIP_results_comparison/case_settings/26-zone/settings switch/26-zone/in/2030 --case-id base_short_current_policies --year 2030
-python pg_to_switch.py MIP_results_comparison/case_settings/26-zone/settings switch/26-zone/in/2040 --case-id base_short_current_policies --year 2040
-python pg_to_switch.py MIP_results_comparison/case_settings/26-zone/settings switch/26-zone/in/2050 --case-id base_short_current_policies --year 2050
-
-# how do we prepare the foresight models?
-# is there a way to prepare multiple cases and/or multiple years at the same time?
+python pg_to_switch.py MIP_results_comparison/case_settings/26-zone/settings switch/26-zone/in/ --case-id base_short --case-id base_short_no_ccs --case-id base_short_current_policies --myopic
+python pg_to_switch.py MIP_results_comparison/case_settings/26-zone/settings switch/26-zone/in/ --case-id base_short
 ```
+
+By default, `pg_to_switch.py` will generate multi-year (foresight) models for each case-id, with each model using all available years of data. If you'd like to make single-period (myopic)) models, you can use the `--myopic` flag. To generate data for a specific year, use `--year NNNN`. To generate data for multiple specific years, use `--year MMMM --year NNNN`, etc.
+
+If you omit the `--case-id` flag, `pg_to_switch.py` will generate inputs for all available cases. This is probably not a good idea, since they will require a lot of space and many of them will not be needed.
 
 (Note: for comparison, you can generate GenX inputs by going to
 `MIP_results_comparison/case_settings/26-zone` and running
@@ -194,7 +188,7 @@ be stored in `MIP_results_comparison/case_settings/26-zone/genx_inputs`.)
 
 ```
 cd switch
-switch solve --inputs-dir 26-zone/in/2030 --outputs-dir 26-zone/in/2030
+switch solve --inputs-dir 26-zone/in/2030/base_short --outputs-dir 26-zone/out/2030/base_short
 ```
 
 # Prepare next stage of myopic models
