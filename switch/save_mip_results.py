@@ -6,21 +6,51 @@ import subprocess
 
 ################################### FOR 26 ZONE ###################################
 ################################### make  resource_capacity.csv
-in_folder = "/Users/rangrang/Library/CloudStorage/GoogleDrive-zhengr@hawaii.edu/My Drive/SWITCH_INPUTS_rr_east"
-# year_list = [2030, 2040, 2050]
-# case_list = [
-#     "base_short_50",
-#     "base_short_200",
-#     "base_short_1000",
-#     "base_short_no_ccs",
-#     "base_short_retire",
-#     "base_short_commit",
-# ]
+in_folder = ""
+results_folder = "../../MIP_results_comparison"
 
-year_list = ["foresight"]
-case_list = ["base_short"]
+year_list = [2030, 2040, 2050]
+case_list = {
+    "base_short": "26z-short-base-200",
+    "base_short_co2_1000": "26z-short-base-1000",
+    "base_short_co2_50": "26z-short-base-50",
+    "base_short_current_policies": "26z-short-current-policies",
+    "base_short_no_ccs": "26z-short-no-ccs",
+    "base_short_retire": "26z-short-retire",
+    "base_short_tx_100": "26z-short-base-tx-100",
+    "base_short_tx_15": "26z-short-base-tx-15",
+    "base_short_tx_200": "26z-short-base-tx-200",
+    "base_short_tx_50": "26z-short-base-tx-50",
+    "base_short_commit": "26z-short-commit",
+}
+
+# TODO:
+# 26z-short-base-tx-0
+# 26z-short-foresight
+# 26z-short-reserves
+
+
+def skip_case(i):
+    if not all(
+        os.path.exists(
+            os.path.join(in_folder, "26-zone/out", str(y), i, "BuildGen.csv")
+        )
+        for y in year_list
+    ):
+        print(f"Skipping unsolved case '{i}'.")
+        return True
+
+    print(f"Processing case '{i}'")
+    return False
+
+
+print("\ncreating resource_capacity.csv")
 for i in case_list:
-    tocompare_folder = os.path.join("tocompare/26z", i)
+    if skip_case(i):
+        continue
+    tocompare_folder = os.path.join(
+        results_folder, case_list[i], "SWITCH_results_summary"
+    )
     resource_capacity_agg = pd.DataFrame()
     for y in year_list:
         # add the retirement back to the resource list
@@ -28,7 +58,7 @@ for i in case_list:
         prebuild2030 = pd.read_csv(
             os.path.join(
                 in_folder,
-                "26z_results/inputs",
+                "26-zone/in",
                 str(y),
                 i,
                 "gen_build_predetermined.csv",
@@ -36,9 +66,7 @@ for i in case_list:
         )
         # prebuild2050 = pd.read_csv(os.path.join(in_folder, "inputs_myopic2050/gen_build_predetermined.csv"))
         build2030 = pd.read_csv(
-            os.path.join(
-                in_folder, "26z_results/outputs", i, "out" + str(y), "BuildGen.csv"
-            )
+            os.path.join(in_folder, "26-zone/out", str(y), i, "BuildGen.csv")
         )
 
         merge2030 = prebuild2030.merge(
@@ -61,9 +89,9 @@ for i in case_list:
         energy_build2030 = pd.read_csv(
             os.path.join(
                 in_folder,
-                "26z_results/outputs",
+                "26-zone/out",
+                str(y),
                 i,
-                "out" + str(y),
                 "BuildStorageEnergy.csv",
             )
         )
@@ -119,7 +147,7 @@ for i in case_list:
             df["start_MWh"] = np.where(df["GEN_BLD_YRS_2"] < y, df["MWh"], 0)
             df["planning_year"] = y
 
-        df["start_MWh"][df["MWh"] == "NaN"] = "NaN"
+        df.loc[df["MWh"] == "NaN", "start_MWh"] = "NaN"
         df["end_MWh"] = df["MWh"]
         resource_capacity = pd.DataFrame()
 
@@ -193,21 +221,22 @@ for i in case_list:
 
 ####################################### make  transmission.csv
 
+print("\ncreating transmission.csv")
 for i in case_list:
-    tocompare_folder = os.path.join("tocompare/26z", i)
+    if skip_case(i):
+        continue
+    tocompare_folder = os.path.join(
+        results_folder, case_list[i], "SWITCH_results_summary"
+    )
     tx_agg = pd.DataFrame()
     for y in year_list:
         transmission2030_new = pd.read_csv(
-            os.path.join(
-                in_folder, "26z_results/outputs", i, "out" + str(y), "transmission.csv"
-            )
+            os.path.join(in_folder, "26-zone/out", str(y), i, "transmission.csv")
         )
 
         # find the existing transmission capacity
         transmission2030_ex = pd.read_csv(
-            os.path.join(
-                in_folder, "26z_results/inputs", str(y), i, "transmission_lines.csv"
-            )
+            os.path.join(in_folder, "26-zone/in", str(y), i, "transmission_lines.csv")
         )
 
         transmission2030 = transmission2030_new.merge(transmission2030_ex, how="left")
@@ -274,18 +303,21 @@ for i in case_list:
 
 ################################### make  generation.csv
 
+print("\ncreating generation.csv")
 for i in case_list:
-    tocompare_folder = os.path.join("tocompare/26z", i)
+    if skip_case(i):
+        continue
+    tocompare_folder = os.path.join(
+        results_folder, case_list[i], "SWITCH_results_summary"
+    )
     generation_agg = pd.DataFrame()
     dispatch_agg = pd.DataFrame()
     for y in year_list:
         ts = pd.read_csv(
-            os.path.join(in_folder, "26z_results/inputs", str(y), i, "timeseries.csv")
+            os.path.join(in_folder, "26-zone/in", str(y), i, "timeseries.csv")
         )
         dispatch2030 = pd.read_csv(
-            os.path.join(
-                in_folder, "26z_results/outputs", i, "out" + str(y), "dispatch.csv"
-            )
+            os.path.join(in_folder, "26-zone/out", str(y), i, "dispatch.csv")
         )
         df = dispatch2030.copy()
 
@@ -392,14 +424,17 @@ for i in case_list:
 
 ################################### make  emission.csv
 
+print("\ncreating emission.csv")
 for i in case_list:
-    tocompare_folder = os.path.join("tocompare/26z", i)
+    if skip_case(i):
+        continue
+    tocompare_folder = os.path.join(
+        results_folder, case_list[i], "SWITCH_results_summary"
+    )
     emission_agg = pd.DataFrame()
     for y in year_list:
         emission2030 = pd.read_csv(
-            os.path.join(
-                in_folder, "26z_results/outputs", i, "out" + str(y), "dispatch.csv"
-            )
+            os.path.join(in_folder, "26-zone/out", str(y), i, "dispatch.csv")
         )
         df = emission2030.copy()
 
