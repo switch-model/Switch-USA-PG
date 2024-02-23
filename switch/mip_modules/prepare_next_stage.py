@@ -146,6 +146,14 @@ def post_solve(m, outdir):
     costs = pd.concat([costs_predet, costs_new])
     to_csv(costs, chained(next_in_path, "gen_build_costs.csv"))
 
+    # remove caps on any non-new-build generators to avoid infeasibility due
+    # to inconsistencies
+    next_gen_info.loc[
+        ~next_gen_info["GENERATION_PROJECT"].isin(costs_new["GENERATION_PROJECT"]),
+        "gen_capacity_limit_mw",
+    ] = float("nan")
+    to_csv(next_gen_info, chained(next_in_path, "gen_info.csv"))
+
     # combine starting transmission for this case with transmission expansion
     trans = read_csv(possibly_chained(in_path, "transmission_lines.csv"))
     trans_built = (
