@@ -1,3 +1,38 @@
+todo:
+(soon) resolve cases where gen_build_predetermined for 2040 has capacity that wasn't in the 2030 file (e.g., with date of construction in 2025) or has less capacity than the 2030 file (e.g., BASN_natural_gas_fired_combined_cycle_1,1994 is 141 Mw in 2030 and 53 MW in 2040). Could the second part be something about clustering plants that are already scheduled to retire? Do we not use a uniform retirement age for each cluster?
+
+(later) implement transmission-limit cases in pipeline (caps)
+
+generate case data: base_short, base_short_current_policies, base_short_no_ccs
+
+
+create a module to limit transmission additions on each corridor to a specified amount
+
+create a script to setup the alternative cases (alternative input files for base_short; flags in scenarios.txt):
++ base:
+  + need to add a script or module to generate next-stage gen_build_predetermined from prior stage
++ transmission limits
+  + update pg_switch.py: use powergenome.GenX.network_max_reinforcement to find expansion limits per line per period
++ carbon slack
+  + update pg_switch.py: generate multiple carbon price files at end, maybe with settings from switch_params.py
++ Early plant retirement​
++ Foresight with sample weeks​
+- save results in MIP_results_comparison
+
+later:
+- Unit commitment​
+  - update pg_switch.py (Ramp_Up_Percentage, Ramp_Dn_Percentage and maybe Min_Power returned by add_misc_gen_values)
+- Best effort​ (all of the above)
+
+eventually: use switch_params.py to define scenarios.txt somehow
+
+eventually: more cases, e.g., longer strips of weeks and maybe tx/carbon cost cases)
+
+run all the models
+
+
+old notes:
+
 put everything in Switch-USA-PG dir/repo
 - PowerGenome subpackage (points to develop branch for now)
 - MIP_results_comparison subpackage

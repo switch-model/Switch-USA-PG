@@ -1099,6 +1099,17 @@ def other_tables(
         co2_cap_long = pd.concat(dfs, axis=0)
         co2_cap_long.to_csv(out_folder / "carbon_policies_regional.csv", index=False)
 
+        # create alternative versions of the carbon cap
+        if not co2_cap_long.empty:
+            # TODO: use input data for this
+            for carbon_price in [50, 200, 1000]:
+                ccl = co2_cap_long.copy()
+                ccl["carbon_cost_dollar_per_tco2"] = carbon_price
+                ccl.to_csv(
+                    out_folder / f"carbon_policies_regional.{carbon_price}.csv",
+                    index=False,
+                )
+
         # create carbon_policies.csv (possibly empty), an all-region cap for use
         # with switch_model.policies.carbon_policies or
         # mip_modules.carbon_policies
@@ -1157,11 +1168,15 @@ def other_tables(
         energy_share_long.to_csv(out_folder / "esr_requirements.csv", index=False)
 
         # remove any generator assignments for inactive ESR programs
-        esr_gens = pd.read_csv(out_folder / "esr_generators.csv")
-        esr_gens = esr_gens.loc[
-            esr_gens["ESR_PROGRAM"].isin(energy_share_long["ESR_PROGRAM"]), :
-        ]
-        esr_gens.to_csv(out_folder / "esr_generators.csv", index=False)
+        try:
+            esr_gens = pd.read_csv(out_folder / "esr_generators.csv")
+        except FileNotFoundError:
+            pass
+        else:
+            esr_gens = esr_gens.loc[
+                esr_gens["ESR_PROGRAM"].isin(energy_share_long["ESR_PROGRAM"]), :
+            ]
+            esr_gens.to_csv(out_folder / "esr_generators.csv", index=False)
 
         # create min_cap_requirements.csv with minimum capacity requirements for
         # some technologies (empty, if no policies defined)
@@ -1187,11 +1202,15 @@ def other_tables(
         mcr.to_csv(out_folder / "min_cap_requirements.csv", index=False)
 
         # remove any generator assignments for inactive min_cap programs
-        min_cap_gens = pd.read_csv(out_folder / "min_cap_generators.csv")
-        min_cap_gens = min_cap_gens.loc[
-            min_cap_gens["MIN_CAP_PROGRAM"].isin(mcr["MIN_CAP_PROGRAM"]), :
-        ]
-        min_cap_gens.to_csv(out_folder / "min_cap_generators.csv", index=False)
+        try:
+            min_cap_gens = pd.read_csv(out_folder / "min_cap_generators.csv")
+        except FileNotFoundError:
+            pass
+        else:
+            min_cap_gens = min_cap_gens.loc[
+                min_cap_gens["MIN_CAP_PROGRAM"].isin(mcr["MIN_CAP_PROGRAM"]), :
+            ]
+            min_cap_gens.to_csv(out_folder / "min_cap_generators.csv", index=False)
 
     # interest and discount rates in financials.csv
     financials_table = pd.DataFrame(
@@ -1417,6 +1436,7 @@ def transmission_tables(scen_settings_dict, out_folder, pg_engine):
         #     "existing_trans_cap"
         # ].replace("", 0)
         transmission_lines.fillna(0, inplace=True)
+
     trans_params_table = pd.DataFrame(
         {
             "trans_capital_cost_per_mw_km": trans_capital_cost_per_mw_km,
@@ -1427,8 +1447,33 @@ def transmission_tables(scen_settings_dict, out_folder, pg_engine):
     )
     trans_params_table
 
+    # calculate expansion limits for all lines and periods
+    dfs = [
+        pd.DataFrame(
+            columns=["TRANSMISSION_LINE", "PERIOD", "Line_Max_Reinforcement_MW"]
+        )
+    ]
+    trans = transmission_lines[["TRANSMISSION_LINE", "existing_trans_cap"]].rename(
+        columns={"existing_trans_cap": "Line_Max_Flow_MW"}
+    )
+    for model_year, scen_settings in scen_settings_dict.items():
+        trans["PERIOD"] = model_year
+        # add Line_Max_Reinforcement_MW (expansion limit) to transmission dataframe
+        # (added automatically by network_max_reinforcement(), based on
+        # Line_Max_Flow_MW and scenario settings)
+        network_max_reinforcement(transmission=trans, settings=scen_settings)
+        dfs.append(trans[dfs[0].columns].copy())
+
+    # combine all years into one dataframe
+    trans_path_expansion_limit = pd.concat(dfs).rename(
+        columns={"Line_Max_Reinforcement_MW": "trans_path_expansion_limit_mw"}
+    )
+
     transmission_lines.to_csv(out_folder / "transmission_lines.csv", index=False)
     trans_params_table.to_csv(out_folder / "trans_params.csv", index=False)
+    trans_path_expansion_limit.to_csv(
+        out_folder / "trans_path_expansion_limit.csv", index=False
+    )
 
 
 import ast
