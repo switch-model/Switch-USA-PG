@@ -7,7 +7,11 @@ import subprocess
 ################################### FOR 26 ZONE ###################################
 ################################### make  resource_capacity.csv
 in_folder = ""
-results_folder = "../../MIP_results_comparison"
+
+# results folder should be one level up from this script
+results_folder = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "MIP_results_comparison")
+)
 
 year_list = [2030, 2040, 2050]
 case_list = {
@@ -458,3 +462,9 @@ for i in case_list:
     emission_agg.to_csv(
         os.path.join(in_folder, tocompare_folder, "emissions.csv"), index=False
     )
+
+
+print(
+    f"\nResults were added to {results_folder}.\n"
+    "They are ready to be pushed to the remote repository."
+)
