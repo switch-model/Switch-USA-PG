@@ -1,4 +1,4 @@
-import os, json
+import os, json, sys
 import pandas as pd
 import numpy as np
 
@@ -37,9 +37,32 @@ case_list = {
 
 
 def skip_case(case):
-    if not all(os.path.exists(output_file(case, y, "BuildGen.csv")) for y in year_list):
+    test_in_files = [output_file(case, y, "BuildGen.csv") for y in year_list]
+    test_out_files = [
+        comparison_file(case, f)
+        for f in [
+            "resource_capacity.csv",
+            "transmission.csv",
+            "transmission_expansion.csv",
+            "dispatch.csv",
+            "generation.csv",
+            "emissions.csv",
+        ]
+    ]
+
+    if not all(os.path.exists(f) for f in test_in_files):
         print(f"Skipping unsolved case '{i}'.")
         return True
+
+    if all(os.path.exists(f) for f in test_out_files):
+        latest_change = max(os.path.getmtime(f) for f in test_in_files)
+        earliest_record = min(os.path.getmtime(f) for f in test_out_files)
+
+        if latest_change < earliest_record and not "--force" in sys.argv:
+            print(
+                f"Skipping previously saved case '{i}'. Run again with '--force' to process this case anyway."
+            )
+            return True
 
     print(f"Processing case '{i}'")
     return False
@@ -67,14 +90,15 @@ def input_file(case, year, file):
     return os.path.join(root_folder, in_dir, file)
 
 
+def comparison_file(case, file):
+    return os.path.join(results_folder, case_list[case], "SWITCH_results_summary", file)
+
+
 ################################### make  resource_capacity.csv
 print("\ncreating resource_capacity.csv")
 for i in case_list:
     if skip_case(i):
         continue
-    tocompare_folder = os.path.join(
-        results_folder, case_list[i], "SWITCH_results_summary"
-    )
     resource_capacity_agg = pd.DataFrame()
     for y in year_list:
         # add the retirement back to the resource list
@@ -232,7 +256,7 @@ for i in case_list:
         resource_capacity_agg["end_value"] > 0
     ]
     resource_capacity_agg.to_csv(
-        os.path.join(root_folder, tocompare_folder, "resource_capacity.csv"),
+        comparison_file(i, "resource_capacity.csv"),
         index=False,
     )
 
@@ -243,9 +267,6 @@ print("\ncreating transmission.csv")
 for i in case_list:
     if skip_case(i):
         continue
-    tocompare_folder = os.path.join(
-        results_folder, case_list[i], "SWITCH_results_summary"
-    )
     tx_agg = pd.DataFrame()
     for y in year_list:
         transmission2030_new = pd.read_csv(output_file(i, y, "transmission.csv"))
@@ -304,14 +325,12 @@ for i in case_list:
         ]
         tx_agg = pd.concat([tx_agg, df])
 
-    tx_agg.to_csv(
-        os.path.join(root_folder, tocompare_folder, "transmission.csv"), index=False
-    )
+    tx_agg.to_csv(comparison_file(i, "transmission.csv"), index=False)
     df = tx_agg.copy()
     df["value"] = df["end_value"] - df["start_value"]
     df2 = df[["model", "line_name", "planning_year", "case", "unit", "value"]]
     df2.to_csv(
-        os.path.join(root_folder, tocompare_folder, "transmission_expansion.csv"),
+        comparison_file(i, "transmission_expansion.csv"),
         index=False,
     )
 
@@ -321,9 +340,6 @@ print("\ncreating generation.csv")
 for i in case_list:
     if skip_case(i):
         continue
-    tocompare_folder = os.path.join(
-        results_folder, case_list[i], "SWITCH_results_summary"
-    )
     generation_agg = pd.DataFrame()
     dispatch_agg = pd.DataFrame()
     for y in year_list:
@@ -422,12 +438,8 @@ for i in case_list:
         dispatch_agg = pd.concat([dispatch_agg, dp])
         generation_agg = pd.concat([generation_agg, generation])
 
-    dispatch_agg.to_csv(
-        os.path.join(root_folder, tocompare_folder, "dispatch.csv"), index=False
-    )
-    generation_agg.to_csv(
-        os.path.join(root_folder, tocompare_folder, "generation.csv"), index=False
-    )
+    dispatch_agg.to_csv(comparison_file(i, "dispatch.csv"), index=False)
+    generation_agg.to_csv(comparison_file(i, "generation.csv"), index=False)
 
     # generation2030 = generation2030.rename({"DispatchGen_MW": "value"}, axis=1)
 
@@ -438,9 +450,6 @@ print("\ncreating emission.csv")
 for i in case_list:
     if skip_case(i):
         continue
-    tocompare_folder = os.path.join(
-        results_folder, case_list[i], "SWITCH_results_summary"
-    )
     emission_agg = pd.DataFrame()
     for y in year_list:
         emission2030 = pd.read_csv(output_file(i, y, "dispatch.csv"))
@@ -463,9 +472,7 @@ for i in case_list:
         df = df[["model", "zone", "planning_year", "case", "unit", "value"]]
         emission_agg = pd.concat([emission_agg, df])
 
-    emission_agg.to_csv(
-        os.path.join(root_folder, tocompare_folder, "emissions.csv"), index=False
-    )
+    emission_agg.to_csv(comparison_file(i, "emissions.csv"), index=False)
 
 
 print(
