@@ -1,6 +1,9 @@
 import os, json, sys
+from datetime import date
 import pandas as pd
 import numpy as np
+
+from transmission_scripts.TX_util import tp_to_date
 
 # note: this will work relative to the directory where the script is run, which
 # should usually be Switch-USA-PG. But for special cases, you can copy the
@@ -54,14 +57,12 @@ def skip_case(case):
         print(f"Skipping unsolved case '{i}'.")
         return True
 
-    if all(os.path.exists(f) for f in test_out_files):
+    if "--skip-saved" in sys.argv and all(os.path.exists(f) for f in test_out_files):
         latest_change = max(os.path.getmtime(f) for f in test_in_files)
         earliest_record = min(os.path.getmtime(f) for f in test_out_files)
 
-        if latest_change < earliest_record and not "--force" in sys.argv:
-            print(
-                f"Skipping previously saved case '{i}'. Run again with '--force' to process this case anyway."
-            )
+        if latest_change < earliest_record:
+            print(f"Skipping previously saved case '{i}'.")
             return True
 
     print(f"Processing case '{i}'")
@@ -344,65 +345,76 @@ for i in case_list:
     dispatch_agg = pd.DataFrame()
     for y in year_list:
         ts = pd.read_csv(input_file(i, y, "timeseries.csv"))
-        dispatch2030 = pd.read_csv(output_file(i, y, "dispatch.csv"))
-        df = dispatch2030.copy()
+        df = pd.read_csv(output_file(i, y, "dispatch.csv"))
 
         df["model"] = "SWITCH"
         df["zone"] = df["gen_load_zone"]
         df["resource_name"] = df["generation_project"]
         df["tech_type"] = "Other"
-        df.loc[
-            df["resource_name"].str.contains("hydrogen", case=False), "tech_type"
+
+        # create a mapping of resource_name -> tech_type and apply it back
+        # to the dataframe (faster than working directly on the large df)
+        techs = df[["resource_name", "tech_type"]].drop_duplicates()
+        techs.loc[
+            techs["resource_name"].str.contains("hydrogen", case=False), "tech_type"
         ] = "Hydrogen"
-        df.loc[df["resource_name"].str.contains("batter", case=False), "tech_type"] = (
-            "Battery"
-        )
-        df.loc[df["resource_name"].str.contains("storage", case=False), "tech_type"] = (
-            "Battery"
-        )
-        df.loc[df["resource_name"].str.contains("coal", case=False), "tech_type"] = (
-            "Coal"
-        )
-        df.loc[
-            df["resource_name"].str.contains("solar|pv", case=False), "tech_type"
+        techs.loc[
+            techs["resource_name"].str.contains("batter", case=False), "tech_type"
+        ] = "Battery"
+        techs.loc[
+            techs["resource_name"].str.contains("storage", case=False), "tech_type"
+        ] = "Battery"
+        techs.loc[
+            techs["resource_name"].str.contains("coal", case=False), "tech_type"
+        ] = "Coal"
+        techs.loc[
+            techs["resource_name"].str.contains("solar|pv", case=False), "tech_type"
         ] = "Solar"
-        df.loc[df["resource_name"].str.contains("wind", case=False), "tech_type"] = (
-            "Wind"
-        )
-        df.loc[
-            df["resource_name"].str.contains("hydro|water", case=False), "tech_type"
+        techs.loc[
+            techs["resource_name"].str.contains("wind", case=False), "tech_type"
+        ] = "Wind"
+        techs.loc[
+            techs["resource_name"].str.contains("hydro|water", case=False), "tech_type"
         ] = "Hydro"
-        df.loc[
-            df["resource_name"].str.contains("distributed", case=False), "tech_type"
+        techs.loc[
+            techs["resource_name"].str.contains("distributed", case=False), "tech_type"
         ] = "Distributed Solar"
-        df.loc[
-            df["resource_name"].str.contains("geothermal", case=False), "tech_type"
+        techs.loc[
+            techs["resource_name"].str.contains("geothermal", case=False), "tech_type"
         ] = "Geothermal"
-        df.loc[df["resource_name"].str.contains("nuclear", case=False), "tech_type"] = (
-            "Nuclear"
-        )
-        df.loc[df["resource_name"].str.contains("natural", case=False), "tech_type"] = (
-            "Natural Gas"
-        )
-        df.loc[df["resource_name"].str.contains("ccs", case=False), "tech_type"] = "CCS"
+        techs.loc[
+            techs["resource_name"].str.contains("nuclear", case=False), "tech_type"
+        ] = "Nuclear"
+        techs.loc[
+            techs["resource_name"].str.contains("natural", case=False), "tech_type"
+        ] = "Natural Gas"
+        techs.loc[
+            techs["resource_name"].str.contains("ccs", case=False), "tech_type"
+        ] = "CCS"
+        techs_dict = techs.set_index("resource_name")["tech_type"].to_dict()
+        df["tech_type"] = df["resource_name"].map(techs_dict)
 
         # df["planning_year"] = y
         df["case"] = i
         df["timestep"] = "all"
         df["unit"] = "MWh"
+
         dp = df.copy()
         dp["value"] = dp["DispatchGen_MW"]
-        from transmission_scripts.TX_util import tp_to_date
 
-        dp = tp_to_date(dp, "timestamp")
-        dp["days"] = pd.to_numeric(dp["days"])
-        from datetime import date
+        # do the time conversions once and map back (for speed)
+        dp_stamps = dp[["timestamp"]].drop_duplicates()
+        dp_stamps = tp_to_date(dp_stamps, "timestamp")
+        dp_stamps["days"] = pd.to_numeric(dp_stamps["days"])
+        dp_stamps["date"] = dp_stamps.apply(
+            lambda dfrow: date.fromisocalendar(
+                dfrow["period"], dfrow["week"], dfrow["days"]
+            ),
+            axis=1,
+        )
+        dp_stamps = dp_stamps.rename(columns={"period": "planning_year"})
+        dp = dp.merge(dp_stamps, on="timestamp")
 
-        def converttodate(dfrow):
-            return date.fromisocalendar(dfrow["period"], dfrow["week"], dfrow["days"])
-
-        dp["date"] = dp.apply(lambda dfrow: converttodate(dfrow), axis=1)
-        dp["planning_year"] = dp["period"]
         dp = dp.sort_values(by=["week"])
         week_to_report = ts.iloc[0]["timeseries"][6:]
         dp = dp.loc[dp["week"] == int(week_to_report)]
@@ -420,6 +432,7 @@ for i in case_list:
             ]
         ]
         dp = dp.loc[dp["value"] > 0]
+
         df["value"] = df["DispatchGen_MW"] * df["tp_weight_in_year_hrs"]
         generation = df.groupby(["resource_name", "period"], as_index=False).agg(
             {
