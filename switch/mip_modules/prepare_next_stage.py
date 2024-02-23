@@ -125,6 +125,11 @@ def post_solve(m, outdir):
     predet = predet.query(
         "build_gen_predetermined > 0 | build_gen_energy_predetermined > 0"
     )
+    # drop any that don't appear in the next model (this should never occur
+    # in principle, but in practice in the MIP project there are some
+    # inconsistencies and this is the only way to resolve them)
+    next_gen_info = read_csv(next_in_path, "gen_info.csv")
+    predet = predet.merge(next_gen_info["GENERATION_PROJECT"])
     to_csv(predet, chained(next_in_path, "gen_build_predetermined.csv"))
 
     # use this model's costs for everything that was built and next model's
