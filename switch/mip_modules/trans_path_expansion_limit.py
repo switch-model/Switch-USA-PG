@@ -52,7 +52,7 @@ def load_inputs(m, switch_data, inputs_dir):
     """
 
     switch_data.load_aug(
-        filename=os.path.join(inputs_dir, "trans_expansion_limit.csv"),
+        filename=os.path.join(inputs_dir, "trans_path_expansion_limit.csv"),
         optional=True,
         param=(m.trans_path_expansion_limit_mw,),
     )
