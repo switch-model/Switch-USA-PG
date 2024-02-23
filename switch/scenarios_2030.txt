@@ -1,6 +1,7 @@
 --scenario-name base_short --inputs-dir 26-zone/in/2030/base_short --outputs-dir 26-zone/out/2030/base_short --include-module mip_modules.prepare_next_stage
 --scenario-name base_short_current_policies --inputs-dir 26-zone/in/2030/base_short_current_policies --outputs-dir 26-zone/out/2030/base_short_current_policies --include-module mip_modules.prepare_next_stage
 --scenario-name base_short_no_ccs --inputs-dir 26-zone/in/2030/base_short_no_ccs --outputs-dir 26-zone/out/2030/base_short_no_ccs --include-module mip_modules.prepare_next_stage
+--scenario-name base_short_tx_0 --inputs-dir 26-zone/in/2030/base_short --outputs-dir 26-zone/out/2030/base_short_tx_0 --input-alias trans_path_expansion_limit.csv=trans_path_expansion_limit.0.csv --include-module mip_modules.prepare_next_stage
 --scenario-name base_short_tx_15 --inputs-dir 26-zone/in/2030/base_short_tx_15 --outputs-dir 26-zone/out/2030/base_short_tx_15 --include-module mip_modules.prepare_next_stage
 --scenario-name base_short_tx_50 --inputs-dir 26-zone/in/2030/base_short_tx_50 --outputs-dir 26-zone/out/2030/base_short_tx_50 --include-module mip_modules.prepare_next_stage
 --scenario-name base_short_tx_100 --inputs-dir 26-zone/in/2030/base_short_tx_100 --outputs-dir 26-zone/out/2030/base_short_tx_100 --include-module mip_modules.prepare_next_stage

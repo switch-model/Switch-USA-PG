@@ -1475,6 +1475,30 @@ def transmission_tables(scen_settings_dict, out_folder, pg_engine):
         out_folder / "trans_path_expansion_limit.csv", index=False
     )
 
+    # create alternative transmission limits
+    # TODO: use input data for this
+    trans_limits = [(0, 0), (15, 400), (50, 400), (100, 400), (200, 400)]
+    for frac, min_mw in trans_limits:
+        dfs = []
+        for year in scen_settings_dict:
+            dfs.append(
+                pd.DataFrame(
+                    {
+                        "TRANSMISSION_LINE": transmission_lines["TRANSMISSION_LINE"],
+                        "PERIOD": year,
+                        # next line reimplements powergenome.GenX.network_max_reinforcement
+                        "trans_path_expansion_limit_mw": (
+                            transmission_lines["existing_trans_cap"] * frac * 0.01
+                        )
+                        .clip(lower=min_mw)
+                        .round(0),
+                    }
+                )
+            )
+        pd.concat(dfs).to_csv(
+            out_folder / f"trans_path_expansion_limit.{frac}.csv", index=False
+        )
+
 
 import ast
 import itertools
