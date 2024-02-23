@@ -1,0 +1,2 @@
+--scenario-name base_short_foresight --inputs-dir 26-zone/in/2030_2050_10/base_short --outputs-dir 26-zone/out/2030_2050_10/base_short
+#--scenario-name base_short_best_effort --inputs-dir 26-zone/in/2030_2050_10/base_short --outputs-dir 26-zone/out/2030_2050_10/base_short --module-list switch/modules_MIP_commit_retire.txt

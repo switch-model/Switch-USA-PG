@@ -186,21 +186,60 @@ be stored in `MIP_results_comparison/case_settings/26-zone/genx_inputs`.)
 *to run each set of scenarios in sequence, i.e., scenarios_2030.txt, scenarios_2040.txt,*
 *scenarios_foresight.txt*.
 
+you can solve one model this way:
 ```
 cd switch
 switch solve --inputs-dir 26-zone/in/2030/base_short --outputs-dir 26-zone/out/2030/base_short
 ```
 
+to solve all the scenarios, use this:
+```
+cd switch
+switch solve-scenarios --scenario-list scenarios_foresight.txt
+switch solve-scenarios --scenario-list scenarios_2030.txt
+# wait for 2030 to finish; will automatically prepare 2040 models
+switch solve-scenarios --scenario-list scenarios_2040.txt
+# wait for 2040 to finish; will automatically prepare 2050 models
+switch solve-scenarios --scenario-list scenarios_2050.txt
+```
+
+to solve individual scenarios, you can use something like this:
+```
+switch solve-scenarios --scenario-list scenarios_2030.txt --scenario base_short
+```
+
 # Prepare next stage of myopic models
 
-Run lines 426-591 of `switch/to_myopic.py` to prepare the next stage of a myopic
-model, e.g., a 2040 model that follows from a 2030 plan.
+The scenarios defined above add `mip_modules.prepare_next_stage` to the 2030 and
+2040 models, which will automatically setup chained models. They also add an
+`--input-aliases` flag to the 2040 and 2050 models to make them use the
+construction plan saved from the previous stage.
 
-TODO: move this code into a new module so it runs automatically at all but the
-final stage of myopic models (using appropriate flags in scenarios.txt)
+If you would like to implement this manually, you can use commands like this:
 
-*(Do they need to change settings to indicate which model and which periods are
-being chained?)*
+```
+cd switch
+
+# 2030 stage
+switch solve --inputs-dir 26-zone/in/2030/base_short --outputs-dir 26-zone/out/2030/base_short --include-module mip_modules.prepare_next_stage
+
+# 2040 stage
+switch solve --inputs-dir 26-zone/in/2040/base_short --outputs-dir 26-zone/out/2040/base_short --include-module mip_modules.prepare_next_stage --input-aliases gen_build_predetermined.csv=gen_build_predetermined.chained.base_short.csv gen_build_costs.csv=gen_build_costs.chained.base_short.csv transmission_lines.csv=transmission_lines.chained.base_short.csv
+
+# 2050 stage
+switch solve --inputs-dir 26-zone/in/2050/base_short --outputs-dir 26-zone/out/2050/base_short --input-aliases gen_build_predetermined.csv=gen_build_predetermined.chained.base_short.csv gen_build_costs.csv=gen_build_costs.chained.base_short.csv transmission_lines.csv=transmission_lines.chained.base_short.csv
+```
+
+To manually create next-stage inputs from a previous stage's outputs, you can
+run a command like this:
+
+```
+cd switch
+# prepare 2040 inputs from 2030 model (specify 2030 inputs and outputs directories)
+python -m mip_modules.prepare_next_stage 26-zone/in/2040/base_short 26-zone/out/2040/base_short
+# or:
+python mip_modules/prepare_next_stage.py 26-zone/in/2040/base_short 26-zone/out/2040/base_short
+```
 
 # Prepare result summaries for comparison
 
