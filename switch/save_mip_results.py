@@ -1,12 +1,14 @@
+import os, json
 import pandas as pd
-import os
 import numpy as np
-import subprocess
 
+# note: this will work relative to the directory where the script is run, which
+# should usually be Switch-USA-PG. But for special cases, you can copy the
+# inputs and outputs directories to a different location and run it there, as
+# long as they are in the expected structure (26-zone/in/year/case and 26-zone/out/year/case)
 
 ################################### FOR 26 ZONE ###################################
-################################### make  resource_capacity.csv
-in_folder = ""
+root_folder = ""
 
 # results folder should be one level up from this script
 results_folder = os.path.abspath(
@@ -34,13 +36,8 @@ case_list = {
 # 26z-short-reserves
 
 
-def skip_case(i):
-    if not all(
-        os.path.exists(
-            os.path.join(in_folder, "26-zone/out", str(y), i, "BuildGen.csv")
-        )
-        for y in year_list
-    ):
+def skip_case(case):
+    if not all(os.path.exists(output_file(case, y, "BuildGen.csv")) for y in year_list):
         print(f"Skipping unsolved case '{i}'.")
         return True
 
@@ -48,6 +45,29 @@ def skip_case(i):
     return False
 
 
+def output_file(case, year, file):
+    """
+    Give path to output file generated for the specified case.
+    """
+    # This is easy because every model has its own outputs dir
+    return os.path.join(root_folder, "26-zone/out", str(year), case, file)
+
+
+def input_file(case, year, file):
+    """
+    Give path to output file generated for the specified case.
+    """
+    # This is tricky because the inputs dir may not have the same name as the
+    # outputs dir (several models may use the same inputs with different
+    # settings for each case)
+    with open(output_file(case, year, "model_config.json"), "r") as f:
+        case_settings = json.load(f)
+
+    in_dir = case_settings["options"]["inputs_dir"]
+    return os.path.join(root_folder, in_dir, file)
+
+
+################################### make  resource_capacity.csv
 print("\ncreating resource_capacity.csv")
 for i in case_list:
     if skip_case(i):
@@ -60,18 +80,14 @@ for i in case_list:
         # add the retirement back to the resource list
         ###### ADD capacity
         prebuild2030 = pd.read_csv(
-            os.path.join(
-                in_folder,
-                "26-zone/in",
-                str(y),
+            input_file(
                 i,
+                y,
                 "gen_build_predetermined.csv",
             )
         )
         # prebuild2050 = pd.read_csv(os.path.join(in_folder, "inputs_myopic2050/gen_build_predetermined.csv"))
-        build2030 = pd.read_csv(
-            os.path.join(in_folder, "26-zone/out", str(y), i, "BuildGen.csv")
-        )
+        build2030 = pd.read_csv(output_file(i, y, "BuildGen.csv"))
 
         merge2030 = prebuild2030.merge(
             build2030,
@@ -91,11 +107,9 @@ for i in case_list:
         build_gen["end_value"] = build_gen["BuildGen"]
         ###### ADD energy capacity
         energy_build2030 = pd.read_csv(
-            os.path.join(
-                in_folder,
-                "26-zone/out",
-                str(y),
+            output_file(
                 i,
+                y,
                 "BuildStorageEnergy.csv",
             )
         )
@@ -218,7 +232,7 @@ for i in case_list:
         resource_capacity_agg["end_value"] > 0
     ]
     resource_capacity_agg.to_csv(
-        os.path.join(in_folder, tocompare_folder, "resource_capacity.csv"),
+        os.path.join(root_folder, tocompare_folder, "resource_capacity.csv"),
         index=False,
     )
 
@@ -234,14 +248,10 @@ for i in case_list:
     )
     tx_agg = pd.DataFrame()
     for y in year_list:
-        transmission2030_new = pd.read_csv(
-            os.path.join(in_folder, "26-zone/out", str(y), i, "transmission.csv")
-        )
+        transmission2030_new = pd.read_csv(output_file(i, y, "transmission.csv"))
 
         # find the existing transmission capacity
-        transmission2030_ex = pd.read_csv(
-            os.path.join(in_folder, "26-zone/in", str(y), i, "transmission_lines.csv")
-        )
+        transmission2030_ex = pd.read_csv(input_file(i, y, "transmission_lines.csv"))
 
         transmission2030 = transmission2030_new.merge(transmission2030_ex, how="left")
 
@@ -295,13 +305,13 @@ for i in case_list:
         tx_agg = pd.concat([tx_agg, df])
 
     tx_agg.to_csv(
-        os.path.join(in_folder, tocompare_folder, "transmission.csv"), index=False
+        os.path.join(root_folder, tocompare_folder, "transmission.csv"), index=False
     )
     df = tx_agg.copy()
     df["value"] = df["end_value"] - df["start_value"]
     df2 = df[["model", "line_name", "planning_year", "case", "unit", "value"]]
     df2.to_csv(
-        os.path.join(in_folder, tocompare_folder, "transmission_expansion.csv"),
+        os.path.join(root_folder, tocompare_folder, "transmission_expansion.csv"),
         index=False,
     )
 
@@ -317,12 +327,8 @@ for i in case_list:
     generation_agg = pd.DataFrame()
     dispatch_agg = pd.DataFrame()
     for y in year_list:
-        ts = pd.read_csv(
-            os.path.join(in_folder, "26-zone/in", str(y), i, "timeseries.csv")
-        )
-        dispatch2030 = pd.read_csv(
-            os.path.join(in_folder, "26-zone/out", str(y), i, "dispatch.csv")
-        )
+        ts = pd.read_csv(input_file(i, y, "timeseries.csv"))
+        dispatch2030 = pd.read_csv(output_file(i, y, "dispatch.csv"))
         df = dispatch2030.copy()
 
         df["model"] = "SWITCH"
@@ -417,10 +423,10 @@ for i in case_list:
         generation_agg = pd.concat([generation_agg, generation])
 
     dispatch_agg.to_csv(
-        os.path.join(in_folder, tocompare_folder, "dispatch.csv"), index=False
+        os.path.join(root_folder, tocompare_folder, "dispatch.csv"), index=False
     )
     generation_agg.to_csv(
-        os.path.join(in_folder, tocompare_folder, "generation.csv"), index=False
+        os.path.join(root_folder, tocompare_folder, "generation.csv"), index=False
     )
 
     # generation2030 = generation2030.rename({"DispatchGen_MW": "value"}, axis=1)
@@ -437,9 +443,7 @@ for i in case_list:
     )
     emission_agg = pd.DataFrame()
     for y in year_list:
-        emission2030 = pd.read_csv(
-            os.path.join(in_folder, "26-zone/out", str(y), i, "dispatch.csv")
-        )
+        emission2030 = pd.read_csv(output_file(i, y, "dispatch.csv"))
         df = emission2030.copy()
 
         df = df.groupby(["gen_load_zone", "period"], as_index=False).agg(
@@ -460,7 +464,7 @@ for i in case_list:
         emission_agg = pd.concat([emission_agg, df])
 
     emission_agg.to_csv(
-        os.path.join(in_folder, tocompare_folder, "emissions.csv"), index=False
+        os.path.join(root_folder, tocompare_folder, "emissions.csv"), index=False
     )
 
 
