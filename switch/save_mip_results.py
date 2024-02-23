@@ -26,15 +26,15 @@ case_list = {
     "base_short_current_policies": "26z-short-current-policies",
     "base_short_no_ccs": "26z-short-no-ccs",
     "base_short_retire": "26z-short-retire",
-    "base_short_tx_100": "26z-short-base-tx-100",
+    "base_short_tx_0": "26z-short-base-tx-0",
     "base_short_tx_15": "26z-short-base-tx-15",
-    "base_short_tx_200": "26z-short-base-tx-200",
     "base_short_tx_50": "26z-short-base-tx-50",
+    "base_short_tx_100": "26z-short-base-tx-100",
+    "base_short_tx_200": "26z-short-base-tx-200",
     "base_short_commit": "26z-short-commit",
 }
 
 # TODO:
-# 26z-short-base-tx-0
 # 26z-short-foresight
 # 26z-short-reserves
 
