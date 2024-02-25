@@ -8,6 +8,7 @@ import ast
 import itertools
 from statistics import mode
 from typing import List, Optional
+import collections
 
 from powergenome.resource_clusters import ResourceGroup
 from pathlib import Path
@@ -55,7 +56,7 @@ from conversion_functions import (
     plant_dict,
     plant_gen_id,
     plant_pudl_id,
-    gen_build_predetermined,
+    existing_gens_by_vintage,
     gen_build_costs_table,
     generation_projects_info,
     hydro_time_tables,
@@ -194,7 +195,363 @@ def fuel_files(
     fuels_table.to_csv(out_folder / "fuels.csv", index=False)
 
 
-def gen_projects_info_file(
+def generator_and_load_files(
+    gc: GeneratorClusters,
+    all_fuel_prices,
+    pudl_engine: sa.engine,
+    scen_settings_dict: dict[dict],
+    out_folder: Path,
+    pg_engine: sa.engine,
+    hydro_variability_new: pd.DataFrame,
+):
+    """
+    Steps:
+    use PowerGenome functions to define all_gen (unchanged across years), with
+        parameters for all generators
+    rename columns in all_gen to match Switch conventions
+    split all_gen into existing_gen_units (exploded by vintage) and new_gens
+
+    """
+
+    out_folder.mkdir(parents=True, exist_ok=True)
+    first_year_settings = first_value(scen_settings_dict)
+
+    all_gen = pg_generator_params(gc, first_year_settings)
+
+    existing_gen, all_gen_units, existing_gen_units = existing_gen_info(
+        gc, pudl_engine, first_year_settings, all_gen
+    )
+
+    new_gen_list, newgens = new_gen_info(gc, scen_settings_dict)
+
+    ###########################################################
+    # check how to deal with the plants below in other models #
+    ###########################################################
+    # remove plants registered/filed after the first year of model year
+    # otherwise it causes problems in switch post solve
+
+    # TODO: make sure filtering matches Switch's own filtering and don't
+    # duplicate between here and conversion_functions.gen_build_costs_table()
+
+    first_period_first_year = first_year_settings["model_first_planning_year"]
+    existing_gen_units = existing_gen_units.loc[
+        existing_gen_units["build_year"] <= first_period_first_year
+    ]
+    to_remove_cap = (
+        existing_gen_units.loc[
+            existing_gen_units["build_year"] > first_period_first_year
+        ]
+        .groupby("GENERATION_PROJECT", as_index=False)
+        .agg(
+            {
+                "GENERATION_PROJECT": "first",
+                "build_gen_predetermined": "sum",
+            }
+        )
+    )
+    existing_gen["reduce_capacity"] = (
+        existing_gen["Resource"]
+        .map(to_remove_cap.set_index("GENERATION_PROJECT")["build_gen_predetermined"])
+        .fillna(0)
+    )
+    existing_gen["Existing_Cap_MW"] = (
+        pd.to_numeric(existing_gen["Existing_Cap_MW"], errors="coerce")
+        - existing_gen["reduce_capacity"]
+    )
+    existing_gen = existing_gen[existing_gen["Existing_Cap_MW"] > 0].drop(
+        ["reduce_capacity"], axis=1
+    )
+
+    #########
+    # create Switch input files from these tables
+
+    # TODO: probably need to move this below the operation_model filtering
+    gen_build_costs_file(first_year_settings, existing_gen_units, newgens, out_folder)
+
+    # Create a complete list of existing and new-build options
+    ## if running an operation model, remove all candidate projects.
+    if first_year_settings.get("operation_model", False):
+        newgens = pd.DataFrame()
+    complete_gens = pd.concat([existing_gen, newgens]).drop_duplicates(
+        subset=["Resource"]
+    )
+    complete_gens = add_misc_gen_values(complete_gens, first_year_settings)
+
+    gen_info_file(
+        all_fuel_prices,
+        complete_gens,
+        first_year_settings,
+        out_folder,
+        existing_gen_units,
+    )
+
+    balancing_tables(first_year_settings, pudl_engine, all_gen_units, out_folder)
+
+    gen_build_predetermined_file(existing_gen_units, out_folder)
+
+    time_varying_files(
+        scen_settings_dict,
+        pg_engine,
+        hydro_variability_new,
+        existing_gen,
+        new_gen_list,
+        out_folder,
+    )
+
+
+def time_varying_files(
+    scen_settings_dict,
+    pg_engine,
+    hydro_variability_new,
+    existing_gen,
+    new_gen_list,
+    out_folder,
+):
+    timepoint_start = 1
+    output = collections.defaultdict(list)  # will hold all years of each type of
+
+    timepoint_start = 1
+    for year_settings, period_ng in zip(
+        scen_settings_dict.values(),
+        new_gen_list,
+    ):
+        ## if running an operation model, remove all candidate projects.
+        if year_settings.get("operation_model") is True:
+            period_ng = pd.DataFrame()
+
+        period_all_gen = pd.concat([existing_gen, period_ng])
+        period_all_gen_variability = make_generator_variability(period_all_gen)
+        period_all_gen_variability.columns = period_all_gen["Resource"]
+        if "gen_is_baseload" in period_all_gen.columns:
+            period_all_gen_variability = set_must_run_generation(
+                period_all_gen_variability,
+                period_all_gen.loc[
+                    period_all_gen["gen_is_baseload"] == True, "Resource"
+                ].to_list(),
+            )
+
+        # ####### add by Rangrang, need to discuss further about CF of hydros in MIS_D_MD
+        # change the variability of hyfro generators in MIS_D_MS
+        # the profiles for them were missing and were filled with 1, which does not make sense since
+        # all variable resources should have a variable capacity factoe between 0-1.
+        hydro_variability_new = hydro_variability_new.iloc[:8760]
+        MIS_D_MS_hydro = [
+            col
+            for col in period_all_gen_variability.columns
+            if "MIS_D_MS" in col
+            if "hydro" in col
+        ]
+        for col in MIS_D_MS_hydro:
+            period_all_gen_variability[col] = hydro_variability_new["MIS_D_MS"]
+
+        period_lc = make_final_load_curves(pg_engine, year_settings)
+
+        cluster_time = year_settings.get("reduce_time_domain") is True
+
+        if cluster_time:
+            assert "time_domain_periods" in year_settings
+            assert "time_domain_days_per_period" in year_settings
+
+            # results is a dict with keys "resource_profiles" (gen_variability), "load_profiles",
+            # "time_series_mapping" (maps clusters sequentially to potential periods in year),
+            # "ClusterWeights", etc. See PG for full details.
+            results, representative_point, weights = kmeans_time_clustering(
+                resource_profiles=period_all_gen_variability,
+                load_profiles=period_lc,
+                days_in_group=year_settings["time_domain_days_per_period"],
+                num_clusters=year_settings["time_domain_periods"],
+                include_peak_day=year_settings.get("include_peak_day", True),
+                load_weight=year_settings.get("demand_weight_factor", 1),
+                variable_resources_only=year_settings.get(
+                    "variable_resources_only", True
+                ),
+            )
+            period_lc = results["load_profiles"]
+            period_variability = results["resource_profiles"]
+
+        # timeseries_df and timepoints_df
+        if cluster_time:
+            timeseries_df, timepoints_df = ts_tp_pg_kmeans(
+                representative_point["slot"],
+                weights,
+                year_settings["time_domain_days_per_period"],
+                year_settings["model_year"],
+                year_settings["model_first_planning_year"],
+            )
+            timepoints_df["timepoint_id"] = range(
+                timepoint_start, timepoint_start + len(timepoints_df)
+            )
+            timepoint_start = timepoints_df["timepoint_id"].max() + 1
+        else:
+            if year_settings.get("full_time_domain") is True:
+                timeseries_df, timepoints_df, timestamp_interval = timeseries_full(
+                    period_lc,
+                    year_settings["model_year"],
+                    year_settings["model_first_planning_year"],
+                    settings=year_settings,
+                )
+            else:
+                timeseries_df, timepoints_df, timestamp_interval = timeseries(
+                    period_lc,
+                    year_settings["model_year"],
+                    year_settings["model_first_planning_year"],
+                    settings=year_settings,
+                )
+
+            timepoints_df["timepoint_id"] = range(
+                timepoint_start, timepoint_start + len(timepoints_df)
+            )
+            timepoint_start = timepoints_df["timepoint_id"].max() + 1
+
+            # create lists and dictionary for later use
+            timepoints_timestamp = timepoints_df[
+                "timestamp"
+            ].to_list()  # timestamp list
+            timepoints_tp_id = timepoints_df[
+                "timepoint_id"
+            ].to_list()  # timepoint_id list
+            timepoints_dict = dict(
+                zip(timepoints_timestamp, timepoints_tp_id)
+            )  # {timestamp: timepoint_id}
+
+        output["timeseries.csv"].append(timeseries_df)
+        output["timepoints.csv"].append(timepoints_df)
+
+        # hydro timepoint data
+        if cluster_time:
+            hydro_timepoints_df = hydro_timepoints_pg_kmeans(timepoints_df)
+            hydro_timeseries_table = hydro_timeseries_pg_kmeans(
+                period_all_gen,
+                period_variability.loc[
+                    :, period_all_gen.loc[period_all_gen["HYDRO"] == 1, "Resource"]
+                ],
+                hydro_timepoints_df,
+            )
+        else:
+            hydro_timepoints_df, hydro_timeseries_table = hydro_time_tables(
+                period_all_gen,
+                period_all_gen_variability,
+                timepoints_df,
+                year_settings["model_year"],
+            )
+        output["hydro_timepoints.csv"].append(hydro_timepoints_df)
+        output["hydro_timeseries.csv"].append(hydro_timeseries_table)
+
+        # hydro network data
+        if cluster_time:
+            (
+                water_nodes,
+                water_connections,
+                reservoirs,
+                hydro_pj,
+                water_node_tp_flows,
+            ) = hydro_system_module_tables(
+                period_all_gen,
+                period_variability.loc[
+                    :, period_all_gen.loc[period_all_gen["HYDRO"] == 1, "Resource"]
+                ],
+                hydro_timepoints_df,
+                flow_per_mw=1.02,
+            )
+        else:
+            (
+                water_nodes,
+                water_connections,
+                reservoirs,
+                hydro_pj,
+                water_node_tp_flows,
+            ) = hydro_system_module_tables(
+                period_all_gen,
+                period_all_gen_variability.loc[
+                    :, period_all_gen.loc[period_all_gen["HYDRO"] == 1, "Resource"]
+                ],
+                timepoints_df,
+                flow_per_mw=1.02,
+            )
+        output["water_nodes.csv"].append(water_nodes)
+        output["water_connections.csv"].append(water_connections)
+        output["reservoirs.csv"].append(reservoirs)
+        output["hydro_generation_projects.csv"].append(hydro_pj)
+        output["water_node_tp_flows.csv"].append(water_node_tp_flows)
+
+        # loads
+        if cluster_time:
+            loads = load_pg_kmeans(period_lc, timepoints_df)
+            timepoints_tp_id = timepoints_df[
+                "timepoint_id"
+            ].to_list()  # timepoint_id list
+            dummy_df = pd.DataFrame({"TIMEPOINT": timepoints_tp_id})
+            dummy_df.insert(0, "LOAD_ZONE", "loadzone")
+            dummy_df.insert(2, "zone_demand_mw", 0)
+            loads = loads.append(dummy_df)
+        else:
+            loads, loads_with_year_hour = loads_table(
+                period_lc,
+                timepoints_timestamp,
+                timepoints_dict,
+                year_settings["model_year"],
+            )
+            # for fuel_cost and regional_fuel_market issue
+            dummy_df = pd.DataFrame({"TIMEPOINT": timepoints_tp_id})
+            dummy_df.insert(0, "LOAD_ZONE", "loadzone")
+            dummy_df.insert(2, "zone_demand_mw", 0)
+            loads = loads.append(dummy_df)
+            # year_hour is used by vcf below
+            year_hour = loads_with_year_hour["year_hour"].to_list()
+        output["loads.csv"].append(loads)
+
+        # capacity factors for variable generators
+        if cluster_time:
+            vcf = variable_cf_pg_kmeans(
+                period_all_gen, period_variability, timepoints_df
+            )
+        else:
+            vcf = variable_capacity_factors_table(
+                period_all_gen_variability,
+                year_hour,
+                timepoints_dict,
+                period_all_gen,
+                year_settings["model_year"],
+            )
+        output["variable_capacity_factors.csv"].append(vcf)
+
+        # timestamp map for graphs
+        if cluster_time:
+            graph_timestamp_map = graph_timestamp_map_kmeans(timepoints_df)
+        else:
+            graph_timestamp_map = graph_timestamp_map_table(
+                timeseries_df, timestamp_interval
+            )
+        output["graph_timestamp_map.csv"].append(graph_timestamp_map)
+
+    # Write to CSV files
+    for file, dfs in output.items():
+        pd.concat(dfs).to_csv(out_folder / file, index=False)
+
+
+def gen_build_costs_file(first_year_settings, existing_gen_units, newgens, out_folder):
+    # TODO: maybe move gen_build_costs_table code into this function
+    gen_build_costs = gen_build_costs_table(
+        first_year_settings, existing_gen_units, newgens
+    )
+    gen_build_costs.to_csv(out_folder / "gen_build_costs.csv", index=False)
+
+
+def gen_build_predetermined_file(existing_gen_units, out_folder):
+    # write the relevant columns out for Switch
+    gen_build_predetermined_cols = [
+        "GENERATION_PROJECT",
+        "build_year",
+        "build_gen_predetermined",
+        "build_gen_energy_predetermined",
+    ]
+
+    existing_gen_units[gen_build_predetermined_cols].to_csv(
+        out_folder / "gen_build_predetermined.csv", index=False
+    )
+
+
+def gen_info_file(
     fuel_prices: pd.DataFrame,
     complete_gens: pd.DataFrame,
     settings: dict,
@@ -353,7 +710,7 @@ def gen_projects_info_file(
             "UtilityPV_Class1_Moderate_100": 0.0,
         }
 
-    gen_project_info = generation_projects_info(
+    gen_info = generation_projects_info(
         complete_gens,
         settings.get("transmission_investment_cost")["spur"]["capex_mw_mile"],
         settings.get("retirement_ages"),
@@ -420,7 +777,7 @@ def gen_projects_info_file(
         "UtilityPV_Class1_Moderate_100": "Solar",
     }
 
-    graph_tech_types_table = gen_project_info.drop_duplicates(subset="gen_tech")
+    graph_tech_types_table = gen_info.drop_duplicates(subset="gen_tech")
     graph_tech_types_table["map_name"] = "default"
     graph_tech_types_table["energy_source"] = graph_tech_types_table[
         "gen_energy_source"
@@ -439,8 +796,8 @@ def gen_projects_info_file(
 
     # non_fuel_energy_table = pd.DataFrame(non_fuel_energy, columns=['energy_source'])
 
-    gen_project_info.loc[
-        gen_project_info["gen_energy_source"].isin(non_fuel_energy),
+    gen_info.loc[
+        gen_info["gen_energy_source"].isin(non_fuel_energy),
         "gen_full_load_heat_rate",
     ] = "."
 
@@ -450,43 +807,35 @@ def gen_projects_info_file(
         out_folder / "non_fuel_energy_sources.csv", index=False
     )
     # change the gen_capacity_limit_mw for those from gen_build_predetermined
-    gen_project_info_new = pd.merge(
-        gen_project_info, gen_buildpre, how="left", on="GENERATION_PROJECT"
-    )
-    gen_project_info_new.loc[
-        gen_project_info_new["gen_predetermined_cap"].notna(), "gen_capacity_limit_mw"
-    ] = gen_project_info_new[["gen_capacity_limit_mw", "gen_predetermined_cap"]].max(
-        axis=1
-    )
-    gen_project_info = gen_project_info_new.drop(
-        ["build_year", "gen_predetermined_cap", "gen_predetermined_storage_energy_mwh"],
+    gen_info_new = pd.merge(gen_info, gen_buildpre, how="left", on="GENERATION_PROJECT")
+    gen_info_new.loc[
+        gen_info_new["build_gen_predetermined"].notna(), "gen_capacity_limit_mw"
+    ] = gen_info_new[["gen_capacity_limit_mw", "build_gen_predetermined"]].max(axis=1)
+    gen_info = gen_info_new.drop(
+        ["build_year", "build_gen_predetermined", "build_gen_energy_predetermined"],
         axis=1,
     )
     # remove the duplicated GENERATION_PROJECT from generation_projects_info .csv, and aggregate the "gen_capacity_limit_mw"
-    gen_project_info["total_capacity"] = gen_project_info.groupby(
-        ["GENERATION_PROJECT"]
-    )["gen_capacity_limit_mw"].transform("sum")
-    gen_project_info = gen_project_info.drop(
+    gen_info["total_capacity"] = gen_info.groupby(["GENERATION_PROJECT"])[
+        "gen_capacity_limit_mw"
+    ].transform("sum")
+    gen_info = gen_info.drop(
         ["gen_capacity_limit_mw"],
         axis=1,
     )
-    gen_project_info.rename(
-        columns={"total_capacity": "gen_capacity_limit_mw"}, inplace=True
-    )
-    gen_project_info = gen_project_info.drop_duplicates(subset="GENERATION_PROJECT")
+    gen_info.rename(columns={"total_capacity": "gen_capacity_limit_mw"}, inplace=True)
+    gen_info = gen_info.drop_duplicates(subset="GENERATION_PROJECT")
 
     # identify generators participating in ESR or minimum capacity programs,
     # then drop those columns
-    ESR_col = [col for col in gen_project_info.columns if col.startswith("ESR")]
-    ESR_generators = gen_project_info[["GENERATION_PROJECT"] + ESR_col]
-    min_cap_col = [
-        col for col in gen_project_info.columns if col.startswith("MinCapTag")
-    ]
-    min_cap_gens = gen_project_info[["GENERATION_PROJECT"] + min_cap_col]
-    gen_project_info = gen_project_info.drop(columns=ESR_col + min_cap_col)
+    ESR_col = [col for col in gen_info.columns if col.startswith("ESR")]
+    ESR_generators = gen_info[["GENERATION_PROJECT"] + ESR_col]
+    min_cap_col = [col for col in gen_info.columns if col.startswith("MinCapTag")]
+    min_cap_gens = gen_info[["GENERATION_PROJECT"] + min_cap_col]
+    gen_info = gen_info.drop(columns=ESR_col + min_cap_col)
 
     # SWITCH 2.0.7 changes file name from  "generation_projects_info.csv" to "gen_info.csv"
-    gen_project_info.to_csv(out_folder / "gen_info.csv", index=False)
+    gen_info.to_csv(out_folder / "gen_info.csv", index=False)
 
     # create esr_generators.csv: list of generators participating in ESR (RPS/CES) programs
     ESR_generators_long = pd.melt(
@@ -515,17 +864,7 @@ def gen_projects_info_file(
     ###############################################################
 
 
-def gen_prebuild_newbuild_info_files(
-    gc: GeneratorClusters,
-    all_fuel_prices,
-    pudl_engine: sa.engine,
-    scen_settings_dict: dict[dict],
-    out_folder: Path,
-    pg_engine: sa.engine,
-    hydro_variability_new: pd.DataFrame,
-):
-    out_folder.mkdir(parents=True, exist_ok=True)
-    first_year_settings = first_value(scen_settings_dict)
+def pg_generator_params(gc, first_year_settings):
     all_gen = gc.create_all_generators()
     all_gen = add_misc_gen_values(all_gen, first_year_settings)
     all_gen = hydro_energy_to_power(
@@ -545,7 +884,10 @@ def gen_prebuild_newbuild_info_files(
         print("Existing_Cap_MW column exists")
     else:
         all_gen["Existing_Cap_MW"] = 0
+    return all_gen
 
+
+def existing_gen_info(gc, pudl_engine, first_year_settings, all_gen):
     existing_gen = all_gen.loc[all_gen["Existing_Cap_MW"] > 0, :]
     data_years = gc.settings.get("eia_data_years", [])
     if not isinstance(data_years, list):
@@ -675,7 +1017,10 @@ def gen_prebuild_newbuild_info_files(
     pg_build = plant_pudl_id(pg_build)
     all_gen_units = plant_pudl_id(all_gen_units)
 
-    gen_buildpre, gen_build_with_id = gen_build_predetermined(
+    # formerly gen_buildpre = gen_build_predetermined(),
+    # but starting Feb. 2024, we carry cost info in this file too,
+    # so it is not just for gen_build_predetermined.
+    existing_gen_units = existing_gens_by_vintage(
         all_gen_units,
         pudl_gen,
         pudl_gen_entity,
@@ -690,18 +1035,11 @@ def gen_prebuild_newbuild_info_files(
         first_year_settings.get("capacity_col", "capacity_mw"),
     )
 
-    retired = gen_build_with_id.loc[
-        gen_build_with_id["retirement_year"] < first_year_settings["model_year"], :
-    ]
-    retired_ids = retired["GENERATION_PROJECT"].to_list()
+    return existing_gen, all_gen_units, existing_gen_units
 
-    # newbuild options
-    periods_dict = {
-        "new_gen": [],
-        "load_curves": [],
-    }
-    planning_periods = []
-    planning_period_start_yrs = []
+
+def new_gen_info(gc, scen_settings_dict):
+    new_gen_list = []
     for year_settings in scen_settings_dict.values():
         # define new generators (period_ng)
         orig_gc_settings = gc.settings
@@ -726,316 +1064,11 @@ def gen_prebuild_newbuild_info_files(
                 target_usd_year=year_settings.get("target_usd_year"),
             )
 
-        periods_dict["new_gen"].append(period_ng)
+        new_gen_list.append(period_ng)
 
-        period_lc = make_final_load_curves(pg_engine, year_settings)
-        periods_dict["load_curves"].append(period_lc)
-        planning_periods.append(year_settings["model_year"])
-        planning_period_start_yrs.append(year_settings["model_first_planning_year"])
-
-    newgens = pd.concat(periods_dict["new_gen"], ignore_index=True)
+    newgens = pd.concat(new_gen_list, ignore_index=True)
     newgens = add_co2_costs_to_o_m(newgens)
-
-    build_yr_list = gen_build_with_id["build_year"].to_list()
-    # using gen_build_with_id because it has plants that were removed for the final gen_build_pred. (ie. build year=2020)
-    gen_project = gen_build_with_id["GENERATION_PROJECT"].to_list()
-    build_yr_plantid_dict = dict(zip(gen_project, build_yr_list))
-
-    ###########################################################
-    # check how to deal with the plants below in other models #
-    ###########################################################
-    # remove plants registered/filed after the first year of model year
-    # otherwise it causes problems in switch post solve
-    gen_buildpre = gen_buildpre.loc[
-        gen_buildpre["build_year"] <= planning_period_start_yrs[0]
-    ]
-    to_remove_cap = (
-        gen_buildpre.loc[gen_buildpre["build_year"] > planning_period_start_yrs[0]]
-        .groupby("GENERATION_PROJECT", as_index=False)
-        .agg(
-            {
-                "GENERATION_PROJECT": "first",
-                "gen_predetermined_cap": "sum",
-            }
-        )
-    )
-    existing_gen["reduce_capacity"] = (
-        existing_gen["Resource"]
-        .map(to_remove_cap.set_index("GENERATION_PROJECT")["gen_predetermined_cap"])
-        .fillna(0)
-    )
-    existing_gen["Existing_Cap_MW"] = (
-        pd.to_numeric(existing_gen["Existing_Cap_MW"], errors="coerce")
-        - existing_gen["reduce_capacity"]
-    )
-    existing_gen = existing_gen[existing_gen["Existing_Cap_MW"] > 0].drop(
-        ["reduce_capacity"], axis=1
-    )
-    ###########################################################
-
-    gen_build_costs = gen_build_costs_table(first_year_settings, gen_buildpre, newgens)
-    # Create a complete list of existing and new-build options
-    ## if running an operation model, remove all candidate projects.
-    if first_year_settings.get("operation_model", False):
-        newgens = pd.DataFrame()
-    complete_gens = pd.concat([existing_gen, newgens]).drop_duplicates(
-        subset=["Resource"]
-    )
-    complete_gens = add_misc_gen_values(complete_gens, first_year_settings)
-
-    gen_projects_info_file(
-        all_fuel_prices, complete_gens, first_year_settings, out_folder, gen_buildpre
-    )
-
-    ts_list = []
-    tp_list = []
-    hts_list = []
-    htp_list = []
-    load_list = []
-    vcf_list = []
-    gts_map_list = []
-    water_nodes_list = []
-    water_connections_list = []
-    reservoirs_list = []
-    hydro_pj_list = []
-    water_node_tp_flows_list = []
-    timepoint_start = 1
-    for year_settings, period_lc, period_ng in zip(
-        scen_settings_dict.values(),
-        periods_dict["load_curves"],
-        periods_dict["new_gen"],
-    ):
-        ## if running an operation model, remove all candidate projects.
-        if year_settings.get("operation_model") is True:
-            period_ng = pd.DataFrame()
-
-        period_all_gen = pd.concat([existing_gen, period_ng])
-        period_all_gen_variability = make_generator_variability(period_all_gen)
-        period_all_gen_variability.columns = period_all_gen["Resource"]
-        if "gen_is_baseload" in period_all_gen.columns:
-            period_all_gen_variability = set_must_run_generation(
-                period_all_gen_variability,
-                period_all_gen.loc[
-                    period_all_gen["gen_is_baseload"] == True, "Resource"
-                ].to_list(),
-            )
-
-        # ####### add by Rangrang, need to discuss further about CF of hydros in MIS_D_MD
-        # change the variability of hyfro generators in MIS_D_MS
-        # the profiles for them were missing and were filled with 1, which does not make sense since
-        # all variable resources should have a variable capacity factoe between 0-1.
-        hydro_variability_new = hydro_variability_new.iloc[:8760]
-        MIS_D_MS_hydro = [
-            col
-            for col in period_all_gen_variability.columns
-            if "MIS_D_MS" in col
-            if "hydro" in col
-        ]
-        for col in MIS_D_MS_hydro:
-            period_all_gen_variability[col] = hydro_variability_new["MIS_D_MS"]
-
-        if year_settings.get("reduce_time_domain") is True:
-            for p in ["time_domain_periods", "time_domain_days_per_period"]:
-                assert p in year_settings.keys()
-
-            # results is a dict with keys "resource_profiles" (gen_variability), "load_profiles",
-            # "time_series_mapping" (maps clusters sequentially to potential periods in year),
-            # "ClusterWeights", etc. See PG for full details.
-            results, representative_point, weights = kmeans_time_clustering(
-                resource_profiles=period_all_gen_variability,
-                load_profiles=period_lc,
-                days_in_group=year_settings["time_domain_days_per_period"],
-                num_clusters=year_settings["time_domain_periods"],
-                include_peak_day=year_settings.get("include_peak_day", True),
-                load_weight=year_settings.get("demand_weight_factor", 1),
-                variable_resources_only=year_settings.get(
-                    "variable_resources_only", True
-                ),
-            )
-
-            period_lc = results["load_profiles"]
-            period_variability = results["resource_profiles"]
-
-            timeseries_df, timepoints_df = ts_tp_pg_kmeans(
-                representative_point["slot"],
-                weights,
-                year_settings["time_domain_days_per_period"],
-                year_settings["model_year"],
-                year_settings["model_first_planning_year"],
-            )
-            timepoints_df["timepoint_id"] = range(
-                timepoint_start, timepoint_start + len(timepoints_df)
-            )
-            timepoint_start = timepoints_df["timepoint_id"].max() + 1
-            hydro_timepoints_df = hydro_timepoints_pg_kmeans(timepoints_df)
-            hydro_timeseries_table = hydro_timeseries_pg_kmeans(
-                period_all_gen,
-                period_variability.loc[
-                    :, period_all_gen.loc[period_all_gen["HYDRO"] == 1, "Resource"]
-                ],
-                hydro_timepoints_df,
-            )
-            (
-                water_nodes,
-                water_connections,
-                reservoirs,
-                hydro_pj,
-                water_node_tp_flows,
-            ) = hydro_system_module_tables(
-                period_all_gen,
-                period_variability.loc[
-                    :, period_all_gen.loc[period_all_gen["HYDRO"] == 1, "Resource"]
-                ],
-                hydro_timepoints_df,
-                flow_per_mw=1.02,
-            )
-            vcf = variable_cf_pg_kmeans(
-                period_all_gen, period_variability, timepoints_df
-            )
-
-            loads = load_pg_kmeans(period_lc, timepoints_df)
-            timepoints_tp_id = timepoints_df[
-                "timepoint_id"
-            ].to_list()  # timepoint_id list
-            dummy_df = pd.DataFrame({"TIMEPOINT": timepoints_tp_id})
-            dummy_df.insert(0, "LOAD_ZONE", "loadzone")
-            dummy_df.insert(2, "zone_demand_mw", 0)
-            loads = loads.append(dummy_df)
-            graph_timestamp_map = graph_timestamp_map_kmeans(timepoints_df)
-        else:
-            if year_settings.get("full_time_domain") is True:
-                timeseries_df, timepoints_df, timestamp_interval = timeseries_full(
-                    period_lc,
-                    year_settings["model_year"],
-                    year_settings["model_first_planning_year"],
-                    settings=year_settings,
-                )
-            else:
-                timeseries_df, timepoints_df, timestamp_interval = timeseries(
-                    period_lc,
-                    year_settings["model_year"],
-                    year_settings["model_first_planning_year"],
-                    settings=year_settings,
-                )
-
-            timepoints_df["timepoint_id"] = range(
-                timepoint_start, timepoint_start + len(timepoints_df)
-            )
-            timepoint_start = timepoints_df["timepoint_id"].max() + 1
-            # create lists and dictionary for later use
-            timepoints_timestamp = timepoints_df[
-                "timestamp"
-            ].to_list()  # timestamp list
-            timepoints_tp_id = timepoints_df[
-                "timepoint_id"
-            ].to_list()  # timepoint_id list
-
-            timepoints_dict = dict(
-                zip(timepoints_timestamp, timepoints_tp_id)
-            )  # {timestamp: timepoint_id}
-            hydro_timepoints_df, hydro_timeseries_table = hydro_time_tables(
-                period_all_gen,
-                period_all_gen_variability,
-                timepoints_df,
-                year_settings["model_year"],
-            )
-            hydro_timepoints_df
-
-            (
-                water_nodes,
-                water_connections,
-                reservoirs,
-                hydro_pj,
-                water_node_tp_flows,
-            ) = hydro_system_module_tables(
-                period_all_gen,
-                period_all_gen_variability.loc[
-                    :, period_all_gen.loc[period_all_gen["HYDRO"] == 1, "Resource"]
-                ],
-                timepoints_df,
-                flow_per_mw=1.02,
-            )
-            loads, loads_with_year_hour = loads_table(
-                period_lc,
-                timepoints_timestamp,
-                timepoints_dict,
-                year_settings["model_year"],
-            )
-            # for fuel_cost and regional_fuel_market issue
-            dummy_df = pd.DataFrame({"TIMEPOINT": timepoints_tp_id})
-            dummy_df.insert(0, "LOAD_ZONE", "loadzone")
-            dummy_df.insert(2, "zone_demand_mw", 0)
-            loads = loads.append(dummy_df)
-
-            year_hour = loads_with_year_hour["year_hour"].to_list()
-
-            vcf = variable_capacity_factors_table(
-                period_all_gen_variability,
-                year_hour,
-                timepoints_dict,
-                period_all_gen,
-                year_settings["model_year"],
-            )
-
-            graph_timestamp_map = graph_timestamp_map_table(
-                timeseries_df, timestamp_interval
-            )
-
-        gts_map_list.append(graph_timestamp_map)
-        ts_list.append(timeseries_df)
-        tp_list.append(timepoints_df)
-        htp_list.append(hydro_timepoints_df)
-        hts_list.append(hydro_timeseries_table)
-        load_list.append(loads)
-        vcf_list.append(vcf)
-        water_nodes_list.append(water_nodes)
-        water_connections_list.append(water_connections)
-        reservoirs_list.append(reservoirs)
-        hydro_pj_list.append(hydro_pj)
-        water_node_tp_flows_list.append(water_node_tp_flows)
-
-    if gts_map_list:
-        graph_timestamp_map = pd.concat(gts_map_list, ignore_index=True)
-        graph_timestamp_map.to_csv(out_folder / "graph_timestamp_map.csv", index=False)
-
-    timeseries_df = pd.concat(ts_list, ignore_index=True)
-    timepoints_df = pd.concat(tp_list, ignore_index=True)
-    hydro_timepoints_df = pd.concat(htp_list, ignore_index=True)
-    hydro_timeseries_table = pd.concat(hts_list, ignore_index=True)
-    loads = pd.concat(load_list, ignore_index=True)
-    vcf = pd.concat(vcf_list, ignore_index=True)
-
-    water_nodes_df = pd.concat(water_nodes_list, ignore_index=True)
-    water_connections_df = pd.concat(water_connections_list, ignore_index=True)
-    reservoirs_df = pd.concat(reservoirs_list, ignore_index=True)
-    hydro_pj_df = pd.concat(hydro_pj_list, ignore_index=True)
-    water_node_tp_flows_df = pd.concat(water_node_tp_flows_list, ignore_index=True)
-
-    water_nodes_df.to_csv(out_folder / "water_nodes.csv", index=False)
-    water_connections_df.to_csv(out_folder / "water_connections.csv", index=False)
-    reservoirs_df.to_csv(out_folder / "reservoirs.csv", index=False)
-    hydro_pj_df.to_csv(out_folder / "hydro_generation_projects.csv", index=False)
-    water_node_tp_flows_df.to_csv(out_folder / "water_node_tp_flows.csv", index=False)
-
-    timeseries_df.to_csv(out_folder / "timeseries.csv", index=False)
-    timepoints_df.to_csv(out_folder / "timepoints.csv", index=False)
-    hydro_timepoints_df.to_csv(out_folder / "hydro_timepoints.csv", index=False)
-
-    balancing_tables(year_settings, pudl_engine, all_gen_units, out_folder)
-    hydro_timeseries_table.to_csv(out_folder / "hydro_timeseries.csv", index=False)
-    loads.to_csv(out_folder / "loads.csv", index=False)
-    vcf.to_csv(out_folder / "variable_capacity_factors.csv", index=False)
-
-    # SWITCH 2.0.7 changes column names "gen_predetermined_cap", "gen_predetermined_storage_energy_mwh" to
-    #  "build_gen_predetermined", "build_gen_energy_predetermined" in gen_build_predetermined.csv.
-    gen_buildpre = gen_buildpre.rename(
-        columns={
-            "gen_predetermined_cap": "build_gen_predetermined",
-            "gen_predetermined_storage_energy_mwh": "build_gen_energy_predetermined",
-        }
-    )
-    gen_buildpre.to_csv(out_folder / "gen_build_predetermined.csv", index=False)
-    gen_build_costs.to_csv(out_folder / "gen_build_costs.csv", index=False)
+    return new_gen_list, newgens
 
 
 def other_tables(
@@ -1697,7 +1730,7 @@ def main(
         all_fuel_prices = add_user_fuel_prices(final_year_settings, gc.fuel_prices)
 
         # generate Switch input tables from the PowerGenome settings/data
-        gen_prebuild_newbuild_info_files(
+        generator_and_load_files(
             gc,
             all_fuel_prices,
             pudl_engine,

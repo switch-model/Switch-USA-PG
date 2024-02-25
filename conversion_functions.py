@@ -137,7 +137,7 @@ def plant_pudl_id(df):
     return pd.concat([has_plant_id, no_plant_id], ignore_index=True)
 
 
-def gen_build_predetermined(
+def existing_gens_by_vintage(
     all_gen: pd.DataFrame,
     pudl_gen: pd.DataFrame,
     pudl_gen_entity: pd.DataFrame,
@@ -174,8 +174,8 @@ def gen_build_predetermined(
     Output columns
         * GENERATION_PROJECT: index from all_gen
         * build_year: using pudl_gen, pudl_gen_entity, eia excel file, and pg_build to get years
-        * gen_predetermined_cap: based on Existing_Cap_MW from all_gen
-        * gen_predetermined_storage_energy_mwh: based on Existing_Cap_MWh from all_gen
+        * build_gen_predetermined: based on Existing_Cap_MW from all_gen
+        * build_gen_energy_predetermined: based on Existing_Cap_MWh from all_gen
     Outputs
         gen_buildpre: is the 'offical' table
         gen_build_with_id: is gen_buildpre before 2020 was taken out and with plant_id in it
@@ -382,31 +382,7 @@ def gen_build_predetermined(
     gen_buildpre.loc[mask, "build_year"] = 2022
     gen_buildpre.loc[mask, capacity_col] = gen_buildpre["Existing_Cap_MW"]
 
-    # don't include new builds in gen_build_predetermined
-    #     new_builds['GENERATION_PROJECT'] = range(gen_buildpre.shape[0]+1, gen_buildpre.shape[0]+1+new_builds.shape[0])
-    #     new_builds = new_builds[['GENERATION_PROJECT', 'Existing_Cap_MW', 'Existing_Cap_MWh']]
-    #     new_builds2020 = new_builds.copy()
-    #     new_builds2030 = new_builds.copy()
-    #     new_builds2040 = new_builds.copy()
-    #     new_builds2050 = new_builds.copy()
-    #     new_builds2020['build_year'] = 2020
-    #     new_builds2030['build_year'] = 2030
-    #     new_builds2040['build_year'] = 2040
-    #     new_builds2050['build_year'] = 2050
-
     # filter to final columns
-    # gen_build_with_id is an unmodified version of gen_build_pre (still has 2020 plant years)
-    gen_build_with_id = gen_buildpre.copy()
-    gen_build_with_id = gen_build_with_id[
-        [
-            "GENERATION_PROJECT",
-            "build_year",
-            "plant_id_eia",
-            "retirement_year",
-            "plant_pudl_id",
-            "technology",
-        ]
-    ]  # this table is for comparison/testing only
     gen_buildpre = gen_buildpre[
         ["GENERATION_PROJECT", "build_year", capacity_col, "capacity_mwh"]
     ]
@@ -419,8 +395,8 @@ def gen_build_predetermined(
 
     gen_buildpre.rename(
         columns={
-            capacity_col: "gen_predetermined_cap",
-            "capacity_mwh": "gen_predetermined_storage_energy_mwh",
+            capacity_col: "build_gen_predetermined",
+            "capacity_mwh": "build_gen_energy_predetermined",
         },
         inplace=True,
     )
@@ -433,11 +409,11 @@ def gen_build_predetermined(
         sort=False,
     ).sum()
     # based on REAM
-    gen_buildpre["gen_predetermined_storage_energy_mwh"] = gen_buildpre[
-        "gen_predetermined_storage_energy_mwh"
+    gen_buildpre["build_gen_energy_predetermined"] = gen_buildpre[
+        "build_gen_energy_predetermined"
     ].fillna(".")
-    gen_buildpre["gen_predetermined_storage_energy_mwh"] = gen_buildpre[
-        "gen_predetermined_storage_energy_mwh"
+    gen_buildpre["build_gen_energy_predetermined"] = gen_buildpre[
+        "build_gen_energy_predetermined"
     ].replace(0, ".")
     gen_buildpre = gen_buildpre.dropna(subset=["build_year"])
 
@@ -448,7 +424,7 @@ def gen_build_predetermined(
         gen_buildpre[gen_buildpre["build_year"] == 2020].index, inplace=True
     )
 
-    return gen_buildpre, gen_build_with_id
+    return gen_buildpre
 
 
 def gen_build_costs_table(settings, existing_gen, newgens):
@@ -468,17 +444,14 @@ def gen_build_costs_table(settings, existing_gen, newgens):
         * GENERATION_PROJECT: based on index
         * build_year: based off of the build years from gen_build_predetermined
         * gen_overnight_cost: is 0 for existing, and uses PG capex_mw values for new generators
-        * gen_fixed_om: is 0 for existing, and uses PG Fixed_OM_Cost_per_MWyr *1000 (SWITCH is per KW) for new gen
+        * gen_fixed_om: is 0 for existing, and uses PG Fixed_OM_Cost_per_MWyr for new gen
         * gen_storage_energy_overnight_cost: is 0 for existing and uses PG capex_mwh for new generators
     """
 
     existing = existing_gen.copy()
-    #     existing = existing[['index','plant_id_eia']]
-    # existing["GENERATION_PROJECT"] = existing["Resource"]
-    # #     existing['GENERATION_PROJECT'] = existing['GENERATION_PROJECT'].astype(str)
-    # existing["build_year"] = existing["GENERATION_PROJECT"].apply(
-    #     lambda x: build_yr_plantid_dict[x]
-    # )
+    # print("Check for how we can get better fixed_om costs")
+    # breakpoint()
+
     existing["gen_overnight_cost"] = 0
     existing["gen_fixed_om"] = 0
     existing["gen_storage_energy_overnight_cost"] = 0
@@ -598,36 +571,6 @@ def generation_projects_info(
     # for now, modifyng the translation layer --RR
     if "co2_pipeline_capex_mw" not in gen_project_info.columns:
         gen_project_info["co2_pipeline_capex_mw"] = 0
-    # # get columns for GENERATION_PROJECT, gen_tech, gen_load_zone, gen_full_load_heat_rate, gen_variable_om,
-    # # gen_connect_cost_per_mw and gen_capacity_limit_mw
-    # gen_project_info = gen_project_info[
-    #     [
-    #         # "index",
-    #         "GENERATION_PROJECT",
-    #         "technology",
-    #         "region",
-    #         "Heat_Rate_MMBTU_per_MWh",
-    #         "Var_OM_Cost_per_MWh",
-    #         "spur_miles",
-    #         "Existing_Cap_MW",
-    #         "spur_capex",
-    #         "interconnect_capex_mw",
-    #         "co2_pipeline_capex_mw",
-    #         "Eff_Up",
-    #         "Eff_Down",
-    #         "VRE",
-    #         "gen_is_variable",
-    #         "Max_Cap_MW",
-    #         "gen_energy_source",
-    #         "gen_is_cogen",
-    #         "gen_is_baseload",
-    #         "gen_ccs_capture_efficiency",
-    #         "gen_ccs_energy_load",
-    #         "gen_scheduled_outage_rate",
-    #         "gen_forced_outage_rate",
-    #         "gen_type",
-    #     ]
-    # ]
 
     # Include co2 pipeline costs as part of connection -- could also be in build capex
     gen_project_info["gen_connect_cost_per_mw"] = gen_project_info[
@@ -643,13 +586,6 @@ def generation_projects_info(
         gen_project_info["gen_connect_cost_per_mw"] == 0, "gen_connect_cost_per_mw"
     ] = (gen_project_info["spur_capex_mw_mi"] * gen_project_info["spur_miles"])
     gen_project_info = gen_project_info.drop(["spur_miles", "spur_capex_mw_mi"], axis=1)
-
-    # Heat_Rate_MMBTU_per_MWh needs to be converted to mBtu/kWh for gen_full_load_heat_rate
-    # mmbtu * 1000 = mbtu and 1 mwh * 1000 = kwh
-    # 1 MMBTU_per_MWh = 1 mBtu/kWh
-    gen_project_info["Heat_Rate_MMBTU_per_MWh"] = gen_project_info[
-        "Heat_Rate_MMBTU_per_MWh"
-    ]
 
     # for gen_is_variable - only solar and wind technologies are true
     technology = all_gen["technology"].to_list()
