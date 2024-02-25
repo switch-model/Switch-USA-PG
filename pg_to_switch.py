@@ -1564,15 +1564,22 @@ def balancing_tables(settings, pudl_engine, all_gen, out_folder):
 
 def year_name(years):
     yrs = list(years)  # may be any iterable
-    if len(yrs) > 2:
-        gap = yrs[1] - yrs[0]
-        if all(y2 - y1 == gap for y1, y2 in zip(yrs[:-1], yrs[1:])):
-            # multiple periods, evenly spaced, label as YYYA_YYYZ_NN
-            # where NN is the gap between years
-            return f"{yrs[0]}_{yrs[-1]}_{gap}"
+    if len(yrs) > 1:
+        return "foresight"
+    else:
+        return str(yrs[0])
 
-    # all other cases, label as YYYA_YYYB_...
-    return "_".join(str(y) for y in yrs)
+    # fancy name, not used since we probably won't run different foresight
+    # models with the same model name
+    # if len(yrs) > 2:
+    #     gap = yrs[1] - yrs[0]
+    #     if all(y2 - y1 == gap for y1, y2 in zip(yrs[:-1], yrs[1:])):
+    #         # multiple periods, evenly spaced, label as YYYA_YYYZ_NN
+    #         # where NN is the gap between years
+    #         return f"{yrs[0]}_{yrs[-1]}_{gap}"
+
+    # # all other cases, label as YYYA_YYYB_...
+    # return "_".join(str(y) for y in yrs)
 
 
 def main(
