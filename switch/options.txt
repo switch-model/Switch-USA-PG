@@ -2,5 +2,7 @@
 --inputs-dir 26-zone/in/2030/base_short
 --module-list modules_MIP.txt
 --no-save-solution
+# potentially useful for reporting
+--save-expression GenCapacity
 --solver gurobi --solver-options-string "method=2 crossover=0"
 --debug

@@ -95,172 +95,206 @@ def comparison_file(case, file):
     return os.path.join(results_folder, case_list[case], "SWITCH_results_summary", file)
 
 
+def tech_type(gen_proj):
+    """
+    Accept a vector of generation projects / resources, and return
+    a vector of tech types for them.
+    """
+    df = pd.DataFrame({"resource_name": gen_proj.unique()})
+    df["tech_type"] = "Other"
+    patterns = [
+        ("hydrogen", "Hydrogen"),
+        ("batter", "Battery"),
+        ("storage", "Battery"),
+        ("coal", "Coal"),
+        ("solar|pv", "Solar"),
+        ("wind", "Wind"),
+        ("hydro|water", "Hydro"),
+        ("distribute", "Distributed Solar"),
+        ("geothermal", "Geothermal"),
+        ("nuclear", "Nuclear"),
+        ("natural", "Natural Gas"),
+        ("ccs", "CCS"),
+    ]
+    for pat, tech_type in patterns:
+        df.loc[df["resource_name"].str.contains(pat, case=False), "tech_type"] = (
+            tech_type
+        )
+
+    # Now use a mapping to assign all of them at once. For very long vectors,
+    # this is much faster than running the code above on the original vector.
+    all_tech_types = gen_proj.map(df.set_index("resource_name")["tech_type"])
+    return all_tech_types
+
+
 ################################### make  resource_capacity.csv
+# resource_name,zone,tech_type,model,planning_year,case,unit,start_value,end_value,start_MWh,end_MWh
+
+
 print("\ncreating resource_capacity.csv")
 for i in case_list:
     if skip_case(i):
         continue
-    resource_capacity_agg = pd.DataFrame()
+
+    build_dfs = [
+        pd.DataFrame(
+            columns=[
+                "resource_name",
+                "zone",
+                "tech_type",
+                "model",
+                "planning_year",
+                "case",
+                "unit",
+                "start_value",
+                "end_value",
+                "start_MWh",
+                "end_MWh",
+            ]
+        )
+    ]
     for y in year_list:
-        # add the retirement back to the resource list
-        ###### ADD capacity
-        prebuild2030 = pd.read_csv(
-            input_file(
-                i,
-                y,
-                "gen_build_predetermined.csv",
-            )
+        # find the capacity built in this model (including existing projects)
+        # that is still online for the period, i.e., has
+        # build year + max_age_years > model start year
+
+        # lookup start and end years for period(s) in this model
+        periods = pd.read_csv(input_file(i, y, "periods.csv")).rename(
+            columns={"INVESTMENT_PERIOD": "planning_year"}
         )
-        # prebuild2050 = pd.read_csv(os.path.join(in_folder, "inputs_myopic2050/gen_build_predetermined.csv"))
-        build2030 = pd.read_csv(output_file(i, y, "BuildGen.csv"))
 
-        merge2030 = prebuild2030.merge(
-            build2030,
-            left_on=["GENERATION_PROJECT", "build_year"],
-            right_on=["GEN_BLD_YRS_1", "GEN_BLD_YRS_2"],
-            how="outer",
-            indicator=True,
+        # get the construction plan (all years up through this model, but some
+        # capacity may have retired before the model started)
+        build_mw = pd.read_csv(output_file(i, y, "BuildGen.csv")).rename(
+            columns={
+                "GEN_BLD_YRS_1": "resource_name",
+                "GEN_BLD_YRS_2": "build_year",
+                "BuildGen": "build_mw",
+            }
         )
-        retired_2030 = pd.DataFrame(merge2030[merge2030["_merge"] == "left_only"])
-
-        df = retired_2030
-        df["GEN_BLD_YRS_1"] = df["GENERATION_PROJECT"]
-        df["GEN_BLD_YRS_2"] = df["build_year"]
-        df["BuildGen"] = df["build_gen_predetermined"]
-        df = df[["GEN_BLD_YRS_1", "GEN_BLD_YRS_2", "BuildGen"]]
-        build_gen = pd.concat([build2030, df])
-        build_gen["end_value"] = build_gen["BuildGen"]
-        ###### ADD energy capacity
-        energy_build2030 = pd.read_csv(
-            output_file(
-                i,
-                y,
-                "BuildStorageEnergy.csv",
-            )
+        build_mwh = pd.read_csv(output_file(i, y, "BuildStorageEnergy.csv")).rename(
+            columns={
+                "STORAGE_GEN_BLD_YRS_1": "resource_name",
+                "STORAGE_GEN_BLD_YRS_2": "build_year",
+                "BuildStorageEnergy": "build_mwh",
+            }
         )
-        df_energy = energy_build2030
-        df_energy = df_energy.rename(
-            {
-                "STORAGE_GEN_BLD_YRS_1": "GEN_BLD_YRS_1",
-                "STORAGE_GEN_BLD_YRS_2": "GEN_BLD_YRS_2",
-                "BuildStorageEnergy": "MWh",
-            },
-            axis=1,
+        build = build_mw.merge(build_mwh, how="outer")
+
+        # cross-reference with the period information for this model
+        build = (
+            build.assign(__x=1)
+            .merge(periods.assign(__x=1), on="__x")
+            .drop(columns=["__x"])
         )
-        resource = build_gen.merge(
-            df_energy,
-            on=["GEN_BLD_YRS_1", "GEN_BLD_YRS_2"],
-            how="left",
-            # indicator=True,
-        )
-        ###############################
-        df = resource
 
-        if y == "foresight":
-            df2030 = df.loc[df["GEN_BLD_YRS_2"] <= 2030]
-            df2030["start_value"] = np.where(
-                df2030["GEN_BLD_YRS_2"] < 2030, df2030["BuildGen"], 0
+        # add suspension/retirement info if available
+        # TODO: avoid the retirement calculations by adding --save-expression
+        # GenCapacity when solving, then read GenCapacity.csv, or alternatively,
+        # pull info from gen_cap.csv instead of working from GenBuild.csv (which
+        # includes the obsolete generators).
+        susp_file = output_file(i, y, "SuspendGen.csv")
+        if os.path.exists(susp_file):
+            # get endogenous retirements (suspensions)
+            suspend_mw = pd.read_csv(susp_file).rename(
+                columns={
+                    "GEN_BLD_SUSPEND_YRS_1": "resource_name",
+                    "GEN_BLD_SUSPEND_YRS_2": "build_year",
+                    "GEN_BLD_SUSPEND_YRS_3": "planning_year",
+                    "SuspendGen": "suspend_mw",
+                }
             )
-            df2030["start_MWh"] = np.where(
-                df2030["GEN_BLD_YRS_2"] < 2030, df2030["MWh"], 0
+            build = build.merge(
+                suspend_mw, on=["resource_name", "build_year", "planning_year"]
             )
-            df2030["planning_year"] = 2030
-
-            df2040 = df.loc[df["GEN_BLD_YRS_2"] <= 2040]
-            df2040["start_value"] = np.where(
-                df2040["GEN_BLD_YRS_2"] < 2040, df2040["BuildGen"], 0
-            )
-            df2040["start_MWh"] = np.where(
-                df2040["GEN_BLD_YRS_2"] < 2040, df2040["MWh"], 0
-            )
-            df2040["planning_year"] = 2040
-
-            df2050 = df.loc[df["GEN_BLD_YRS_2"] <= 2050]
-            df2050["start_value"] = np.where(
-                df2050["GEN_BLD_YRS_2"] < 2050, df2050["BuildGen"], 0
-            )
-            df2050["start_MWh"] = np.where(
-                df2050["GEN_BLD_YRS_2"] < 2050, df2050["MWh"], 0
-            )
-            df2050["planning_year"] = 2050
-
-            df = pd.concat([df2030, df2040, df2050])
+            missing = build[build["suspend_mw"].isna()]
+            if not missing.empty:
+                print(
+                    f"WARNING: unexpected missing SuspendGen values found in case {i} in year {y}:"
+                )
+                print(missing)
+                build["suspend_mw"] = build["suspend_mw"].fillna(0)
         else:
-            df["start_value"] = np.where(df["GEN_BLD_YRS_2"] < y, df["BuildGen"], 0)
-            df["start_MWh"] = np.where(df["GEN_BLD_YRS_2"] < y, df["MWh"], 0)
-            df["planning_year"] = y
+            # no suspension file
+            build["suspend_mw"] = 0
 
-        df.loc[df["MWh"] == "NaN", "start_MWh"] = "NaN"
-        df["end_MWh"] = df["MWh"]
-        resource_capacity = pd.DataFrame()
+        # get retirement age from gen_info.csv
+        gen_info = pd.read_csv(input_file(i, y, "gen_info.csv")).set_index(
+            "GENERATION_PROJECT"
+        )
+        build["retire_year"] = build["build_year"] + build["resource_name"].map(
+            gen_info["gen_max_age"]
+        )
 
-        resource_capacity["resource_name"] = df["GEN_BLD_YRS_1"]
-        resource_capacity["zone"] = [x[0] for x in df["GEN_BLD_YRS_1"].str.split("_")]
-        resource_capacity["tech_type"] = "Other"
-        resource_capacity.loc[
-            resource_capacity["resource_name"].str.contains("hydrogen", case=False),
-            "tech_type",
-        ] = "Hydrogen"
-        resource_capacity.loc[
-            resource_capacity["resource_name"].str.contains("batter", case=False),
-            "tech_type",
-        ] = "Battery"
-        resource_capacity.loc[
-            resource_capacity["resource_name"].str.contains("coal", case=False),
-            "tech_type",
-        ] = "Coal"
-        resource_capacity.loc[
-            resource_capacity["resource_name"].str.contains("solar|pv", case=False),
-            "tech_type",
-        ] = "Solar"
-        resource_capacity.loc[
-            resource_capacity["resource_name"].str.contains("wind", case=False),
-            "tech_type",
-        ] = "Wind"
-        resource_capacity.loc[
-            resource_capacity["resource_name"].str.contains("hydro|water", case=False),
-            "tech_type",
-        ] = "Hydro"
-        resource_capacity.loc[
-            resource_capacity["resource_name"].str.contains("distribute", case=False),
-            "tech_type",
-        ] = "Distributed Solar"
-        resource_capacity.loc[
-            resource_capacity["resource_name"].str.contains("geothermal", case=False),
-            "tech_type",
-        ] = "Geothermal"
-        resource_capacity.loc[
-            resource_capacity["resource_name"].str.contains("nuclear", case=False),
-            "tech_type",
-        ] = "Nuclear"
-        resource_capacity.loc[
-            resource_capacity["resource_name"].str.contains("natural", case=False),
-            "tech_type",
-        ] = "Natural Gas"
-        resource_capacity.loc[
-            resource_capacity["resource_name"].str.contains("ccs", case=False),
-            "tech_type",
-        ] = "CCS"
-        resource_capacity["model"] = "SWITCH"
+        # find amount of capacity online before and after each period
+        # (note: with retirement, "before" becomes ill-defined in myopic models,
+        # because we don't know how much was suspended in the previous period,
+        # so we fix that up later)
+        # Assume "start" means capacity available immediately prior to running
+        # this model, possibly including capacity that retired just as this
+        # model started.
+        cap_start = (
+            build.query(
+                "(build_year < period_start) & (retire_year > period_start - 1)"
+            )
+            .groupby(["resource_name", "planning_year"], as_index=False)[
+                ["build_mw", "build_mwh"]
+            ]
+            .sum()
+        ).rename(columns={"build_mw": "start_value", "build_mwh": "start_MWh"})
+        # assume anything that made it _past_ the start of this period is still
+        # there at the end, since that is what Switch does and it captures the
+        # notion of "what's running in this period" (if capacity is online one
+        # period and retired by the next period, it is treated as retired in the
+        # second period)
+        cap_end = (
+            build.query("(build_year <= period_end) & (retire_year > period_start)")
+            # subtract suspensions/retirements from the capacity that would
+            # otherwise be online through this study period (shows as not online
+            # at end)
+            .assign(build_mw=lambda df: df["build_mw"] - df["suspend_mw"])
+            .groupby(["resource_name", "planning_year"], as_index=False)[
+                ["build_mw", "build_mwh"]
+            ]
+            .sum()
+        ).rename(columns={"build_mw": "end_value", "build_mwh": "end_MWh"})
 
-        resource_capacity["planning_year"] = df["planning_year"]
-        resource_capacity["case"] = i
-        resource_capacity["unit"] = "MW"
-        resource_capacity["start_value"] = df["start_value"]
-        resource_capacity["end_value"] = df["end_value"]
-        resource_capacity["start_MWh"] = df["start_MWh"]
-        resource_capacity["end_MWh"] = df["end_MWh"]
+        build_sum = cap_start.merge(cap_end)
+        # add other columns needed for the report
+        build_sum["zone"] = build_sum["resource_name"].map(gen_info["gen_load_zone"])
+        build_sum["tech_type"] = tech_type(build_sum["resource_name"])
+        build_sum["model"] = "SWITCH"
+        build_sum["planning_year"] = y
+        build_sum["case"] = i
+        build_sum["unit"] = "MW"
 
-        resource_capacity_agg = pd.concat([resource_capacity_agg, resource_capacity])
+        build_dfs.append(build_sum)
 
+    # combine and round results (there are some 1e-14's in there)
+    resource_capacity_agg = pd.concat(build_dfs).round(6)
+
+    # TODO: use previous period's end_value as start_value for next period,
+    # if available; this is a better estimate than the ones above, because it
+    # accounts for retirements/suspensions in the previous period (they are
+    # treated as not there at the start, but there at the end if unsuspended)
+    # For now, we ignore this because start_value is not used anywhere.
+
+    # fill missing capacity values; these are generally due to old plants that
+    # got carried forward to later models. They don't participate in the
+    # objective or constraints, so the solver doesn't assign them values
+    # resource_capacity_agg = resource_capacity_agg.fillna(
+    #     {"start_value": 0, "end_value": 0, "start_MWh": 0, "end_MWh": 0}
+    # )
+
+    # drop empty rows
     resource_capacity_agg = resource_capacity_agg.loc[
-        resource_capacity_agg["end_value"] > 0
+        (resource_capacity_agg["end_value"] > 0)
+        | (resource_capacity_agg["end_MWh"] > 0)
     ]
     resource_capacity_agg.to_csv(
         comparison_file(i, "resource_capacity.csv"),
         index=False,
     )
-
 
 ####################################### make  transmission.csv
 
@@ -350,50 +384,7 @@ for i in case_list:
         df["model"] = "SWITCH"
         df["zone"] = df["gen_load_zone"]
         df["resource_name"] = df["generation_project"]
-        df["tech_type"] = "Other"
-
-        # create a mapping of resource_name -> tech_type and apply it back
-        # to the dataframe (faster than working directly on the large df)
-        techs = df[["resource_name", "tech_type"]].drop_duplicates()
-        techs.loc[
-            techs["resource_name"].str.contains("hydrogen", case=False), "tech_type"
-        ] = "Hydrogen"
-        techs.loc[
-            techs["resource_name"].str.contains("batter", case=False), "tech_type"
-        ] = "Battery"
-        techs.loc[
-            techs["resource_name"].str.contains("storage", case=False), "tech_type"
-        ] = "Battery"
-        techs.loc[
-            techs["resource_name"].str.contains("coal", case=False), "tech_type"
-        ] = "Coal"
-        techs.loc[
-            techs["resource_name"].str.contains("solar|pv", case=False), "tech_type"
-        ] = "Solar"
-        techs.loc[
-            techs["resource_name"].str.contains("wind", case=False), "tech_type"
-        ] = "Wind"
-        techs.loc[
-            techs["resource_name"].str.contains("hydro|water", case=False), "tech_type"
-        ] = "Hydro"
-        techs.loc[
-            techs["resource_name"].str.contains("distributed", case=False), "tech_type"
-        ] = "Distributed Solar"
-        techs.loc[
-            techs["resource_name"].str.contains("geothermal", case=False), "tech_type"
-        ] = "Geothermal"
-        techs.loc[
-            techs["resource_name"].str.contains("nuclear", case=False), "tech_type"
-        ] = "Nuclear"
-        techs.loc[
-            techs["resource_name"].str.contains("natural", case=False), "tech_type"
-        ] = "Natural Gas"
-        techs.loc[
-            techs["resource_name"].str.contains("ccs", case=False), "tech_type"
-        ] = "CCS"
-        techs_dict = techs.set_index("resource_name")["tech_type"].to_dict()
-        df["tech_type"] = df["resource_name"].map(techs_dict)
-
+        df["tech_type"] = tech_type(df["resource_name"])
         # df["planning_year"] = y
         df["case"] = i
         df["timestep"] = "all"

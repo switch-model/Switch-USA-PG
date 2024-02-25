@@ -243,21 +243,21 @@ python mip_modules/prepare_next_stage.py 26-zone/in/2040/base_short 26-zone/out/
 
 # Prepare result summaries for comparison
 
-Run lines 1-425 of `switch/to_myopic.py` to prepare standardized results and
-copy them to the MIP_results_comparison sub-repository *(does this work?)*.
-
-Then run these commands:
+After the models have solved, run these commands to prepare standardized results and copy them to the MIP_results_comparison sub-repository.
 
 ```
 cd MIP_results_comparison
+git pull
+cd ../switch
+python save_mip_results.py
+cd ../MIP_results_comparison
 git add .
 git commit -m 'new Switch results'
-git pull
 git push
 ```
 
-TODO: move all of this into a new module so it runs automatically when each
-model finishes
+TODO: maybe move all of this into a switch module so it runs automatically when each
+case finishes
 
 # Notes
 
