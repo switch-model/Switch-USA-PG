@@ -259,7 +259,9 @@ for i in case_list:
             .sum()
         ).rename(columns={"build_mw": "end_value", "build_mwh": "end_MWh"})
 
-        build_sum = cap_start.merge(cap_end)
+        # need an outer join to get any that didn't exist at the start (new
+        # build) or end (retired during study)
+        build_sum = cap_start.merge(cap_end, how="outer").fillna(0)
         # add other columns needed for the report
         build_sum["zone"] = build_sum["resource_name"].map(gen_info["gen_load_zone"])
         build_sum["tech_type"] = tech_type(build_sum["resource_name"])
