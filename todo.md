@@ -1,6 +1,28 @@
 todo:
-(soon) resolve cases where gen_build_predetermined for 2040 has capacity that wasn't in the 2030 file (e.g., with date of construction in 2025) or has less capacity than the 2030 file (e.g., BASN_natural_gas_fired_combined_cycle_1,1994 is 141 Mw in 2030 and 53 MW in 2040). Could the second part be something about clustering plants that are already scheduled to retire? Do we not use a uniform retirement age for each cluster?
 
+(- means to do, + means done)
+
++ make sure switch can run with gen_build_predetermined after start of study (may cause problems in post solve); if not, drop any unusable gens in pg_to_switch
+
+- add retire_early and retire_late options to gen_build_suspend and set that in options.txt; will also need to add the can_suspend flags below, so we can use this
+module full-time
+
+- add gen_can_suspend and gen_can_retire_early settings (both default to 0) to gen_info.csv for use by gen_build_suspend (if gen_can_retire and not gen_can_suspend, require later suspensions >= previous suspensions for each gen/vintage)
+- add --retire {early, mid, late} flag for gen_build, to control whether
+  retirement (and construction) are moved to the start, middle or end of the
+  period when they occur (which affects how we decide what is online during that
+  period)
+
+- resolve cases where gen_build_predetermined for 2040 has capacity that wasn't in the 2030 file (e.g., with date of construction in 2025) or has less capacity than the 2030 file (e.g., BASN_natural_gas_fired_combined_cycle_1,1994 is 141 Mw in 2030 and 53 MW in 2040). Could the second part be something about clustering plants that are already scheduled to retire? Do we not use a uniform retirement age for each cluster?
++ get fixed O&M to show up for existing plants so there is money to save by retiring them
+- update transmission scenario definitions to all branch off base _short instead of using separate dirs for most
+- add code to pg_to_switch to auto-generate scenarios.txt (for all possible cases), depending on whether it is a pre-chain year, post-chain year, which transmission and co2 costs are used, whether retirement or ramp limits are enabled, etc.
+- make dirs a more readable color in ls on hpc
+- setup .slurm scripts to run the scenarios as array jobs with different jobs for different years and dependencies between them (can we have dependencies between tasks, so 2040 case 1 depends on 2030 case 1?)
+- setup hpc to share history right away between sessions
+- incorporate early retirements into reported capacity for MIP
+
+(later) grapple somehow with the fact that powergenome thinks it's setting up scenario dirs, but really it's data dirs, and then a scenario consists of a data dir plus some other settings
 (later) implement transmission-limit cases in pipeline (caps)
 
 generate case data: base_short, base_short_current_policies, base_short_no_ccs
