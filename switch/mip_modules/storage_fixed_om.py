@@ -33,6 +33,37 @@ def define_components(mod):
     )
     mod.Cost_Components_Per_Period.append("TotalStorageEnergyFixedOMCosts")
 
+    # Some projects are retired before the first study period, so they
+    # don't appear in the objective function or any constraints.
+    # In this case, pyomo may leave the variable value undefined even
+    # after a solve, instead of assigning a value within the allowed
+    # range. This causes errors in the Progressive Hedging code, which
+    # expects every variable to have a value after the solve. So as a
+    # starting point we assign an appropriate value to all the existing
+    # projects here.
+    def BuildStorageEnergy_assign_default_value(m, g, bld_yr):
+        if (g, bld_yr) in m.build_gen_energy_predetermined:
+            m.BuildStorageEnergy[g, bld_yr] = m.build_gen_energy_predetermined[
+                g, bld_yr
+            ]
+        elif g in m.STORAGE_GENS and m.gen_storage_energy_to_power_ratio[g] == float(
+            "inf"
+        ):
+            raise ValueError(
+                f"For storage generator g='{g}', gen_build_predetermined[g, {bld_yr}] "
+                f"has been specified, but not "
+                f"gen_build_energy_predetermined[g, {bld_yr}] or "
+                f"gen_storage_energy_to_power_ratio[g]."
+            )
+
+    mod.BuildStorageEnergy_assign_default_value = BuildAction(
+        mod.PREDETERMINED_GEN_BLD_YRS, rule=BuildStorageEnergy_assign_default_value
+    )
+
+    # TODO: expand m.PREDETERMINED_GEN_BLD_YRS to include generators with
+    # energy specified but not power, and in these cases, raise an error if
+    # energy_to_power_ratio is not specified.
+
 
 def load_inputs(mod, switch_data, inputs_dir):
     """
