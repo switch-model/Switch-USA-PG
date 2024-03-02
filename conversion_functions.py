@@ -12,6 +12,25 @@ import math
 from powergenome.time_reduction import kmeans_time_clustering
 
 
+# convenience functions to get first/final keys/values from dicts
+# (e.g., first year in a dictionary organized by years)
+# note: these use the order of creation, not lexicographic order
+def first_key(d: dict):
+    return next(iter(d.keys()))
+
+
+def first_value(d: dict):
+    return next(iter(d.values()))
+
+
+def final_key(d: dict):
+    return next(reversed(d.keys()))
+
+
+def final_value(d: dict):
+    return next(reversed(d.values()))
+
+
 def switch_fuel_cost_table(
     aeo_fuel_region_map, fuel_prices, IPM_regions, scenario, year_list
 ):
@@ -88,28 +107,6 @@ def create_dict_plantgen(df, column):
     return dictionary
 
 
-def create_dict_plantpudl(df: pd.DataFrame, column: str):
-    """
-    Create dictionary from two columns, removing na's beforehand
-    {plant_pudl_id: year}
-    """
-    df = df.dropna(subset=["build_final"])
-    ids = df["plant_pudl_id"].to_list()
-    dates = df[column].to_list()
-    dictionary = dict(zip(ids, dates))
-    return dictionary
-
-
-def plant_dict(plantideia, dictionary):
-    """
-    Take key from pandas column, return value from dictionary. Passing if not in dictionary.
-    """
-    if plantideia in dictionary:
-        return dictionary[plantideia]
-    else:
-        pass
-
-
 def plant_gen_id(df):
     """
     Create unique id for generator by combining plant_id_eia and generator_id
@@ -119,75 +116,233 @@ def plant_gen_id(df):
     return df
 
 
-def plant_pudl_id(df):
+def add_generic_gen_build_info(units_by_model_year, scen_settings_dict):
     """
-    Create unique id for generator by combining plant_id_eia and unit_pudl_id
+    Return a dataframe showing Resource, model_year and synthetic build_year,
+    capacity_mw and capacity_mwh values for generic existing generators. These
+    are generators where PowerGenome reported Existing_Cap_MW and/or
+    Existing_Cap_MWh for one or more model years, but no plant_id_eia, so we
+    couldn't look up unit-level construction info with eia_build_info().
     """
-    has_plant_id = df.loc[df["plant_id_eia"].notna(), :]
-    no_plant_id = df.loc[df["plant_id_eia"].isna(), :]
-    plant_id_eia = has_plant_id["plant_id_eia"]
-    unit_id_pg = has_plant_id["unit_id_pg"].astype(str)
-    has_plant_id.loc[~unit_id_pg.str.contains("_"), "plant_pudl_id"] = (
-        plant_id_eia.astype(str) + "_" + unit_id_pg
-    )
-    has_plant_id.loc[has_plant_id["plant_pudl_id"].isna(), "plant_pudl_id"] = (
-        has_plant_id.loc[has_plant_id["plant_pudl_id"].isna(), "unit_id_pg"]
-    )
+    # Distributed generation and a few others are in the "existing" list with
+    # non-zero Existing_Cap_MW, but no plant_id_eia and therefore no build_year
+    # or capacity_mw.
+    # TODO: fix this upstream in PowerGenome, e.g., create dummy plant
+    # construction info there in addition to the overall project info
 
-    return pd.concat([has_plant_id, no_plant_id], ignore_index=True)
+    all_units = units_by_model_year.copy()
+
+    generic = all_units["existing"] & all_units["plant_id_eia"].isna()
+
+    extra_units = all_units.loc[generic, :]
+
+    # We could assess the amount of capacity available for each Resource in each
+    # model_year, then create records with various build_year and capacity
+    # values that will result in the specified amount of capacity being
+    # available in each year. But this doesn't have a simple solution, because
+    # capacity is aging out at the same time as it is being added, so we'd
+    # probably need to write a short linear program like "min sum(build[g,
+    # y]*(2050-y) for g in gens, y in {1950...2050}), such that known_online[g,
+    # y] = sum(build[g, y'] for y' in {y-max_age..y}), y in {2030, 2040, 2050}".
+    # This would work for multi-period (foresight) models, but then we'd also
+    # need some way to coordinate these choices between the separate periods of
+    # myopic models.
+
+    # Instead of that, we assume the plants were built just before the start of
+    # the study, which seems to be a pretty close match for what PowerGenome
+    # expects (i.e., short-lived capacity in extra_units drops out after 10-20
+    # years, and long-lived capacity persists longer.)
+
+    # TODO: retrieve this year from PowerGenome
+    all_units.loc[generic, "build_year"] = 2022
+    all_units.loc[generic, "unit_id_pg"] = "generic"
+    all_units.loc[generic, "capacity_mw"] = all_units.loc[generic, "Existing_Cap_MW"]
+    all_units.loc[generic, "capacity_mwh"] = all_units.loc[generic, "Existing_Cap_MWh"]
+
+    return all_units
 
 
-def existing_gens_by_vintage(
-    all_gen: pd.DataFrame,
-    pudl_gen: pd.DataFrame,
-    pudl_gen_entity: pd.DataFrame,
-    pg_build: pd.DataFrame,
-    manual_build_yr: dict,
-    eia_Gen: pd.DataFrame,
-    eia_Gen_prop: pd.DataFrame,
-    plant_gen_manual: dict,
-    plant_gen_manual_proposed: dict,
-    plant_gen_manual_retired: dict,
-    retirement_ages: dict,
-    capacity_col: str,
+def eia_build_info(
+    gc,
+    pudl_engine,
+    existing_gens,
 ):
     """
-    Create the gen_build_predetermined table
-    Inputs
-        1) all_gen: from PowerGenome gc.create_all_generators()
-        2) pudl_gen: from PUDL generators_eia860
-            - retirement_date
-            - planned_retirement)date
-            - current_planned_operating_date
-        3) pudl_gen_entity: from PUDL generators_entity_eia
-            - operating_date
-        4) pg_build: from PowerGenome gc.units_model
-            - planned_retirement_date
-            - operating_date
-            - operating_year
-            - retirement_year
-        5) manual_build_yr: dictionary of build years that were found manually (outside of PUDL and PG)
-        6) eia_Gen: eia operable plants
-        7) eia_Gen_prop: eia proposed plants
-        8) plant_gen_manual, plant_gen_manual_proposed, plant_gen_manual_retired: manually found build_years
-        9) retirement_ages: how many years until plant retires
-    Output columns
-        * GENERATION_PROJECT: index from all_gen
-        * build_year: using pudl_gen, pudl_gen_entity, eia excel file, and pg_build to get years
-        * build_gen_predetermined: based on Existing_Cap_MW from all_gen
-        * build_gen_energy_predetermined: based on Existing_Cap_MWh from all_gen
-    Outputs
-        gen_buildpre: is the 'offical' table
-        gen_build_with_id: is gen_buildpre before 2020 was taken out and with plant_id in it
+    Return a dataframe showing Resource, plant_gen_id, build_year, capacity_mw
+    and capacity_mwh for all EIA generating units within each resource in the
+    existing_gens dataframe, using PowerGenome and PUDL unit-level info.
 
+    Inputs:
+    - gc: GeneratorClusters object used to produce existing_gens
+    - pudl_engine: object used to access pudl database
+    - existing_gens: dataframe from gc.create_all_generators() with Resource,
+      plant_id_eia and unit_id_pg columns. The latter two will usually contain
+      lists of values in each cell, corresponding to the units that were
+      aggregated to define the resource.
     """
+    ####################### Steps:
+    # - build dataframes that may show construction or retirement year for
+    #   generator units (pudl_gen, pudl_gen_entity, eia_Gen, eia_Gen_prop). Each
+    #   of these has a plant_gen_id formed from the plant_id_eia and
+    #   generator_id (EIA generator ID), which is a unique key among all EIA
+    #   generating units.
+    # - define pg_build dataframe based on gc.units_model, assign plant_gen_id
+    #   to it, and use that to add possible build/retire dates from the other
+    #   tables
+    # - set definitive build_year, capacity_mw and capacity_mwh in pg_build,
+    #   using the info from pg_build and the other columns, plus inference based
+    #   on retirement year and retirement age (looked up per technology)
+    # - create gen_units dataframe by expanding existing_gens into one row per
+    #   generating unit, using the lists of values in plant_id_eia and gen_id_pg
+    #   (note that these do not make a unique key, but there does appear to be
+    #   one row per EIA generating unit)
+    # - merge gen_units with pg_build, then return the required columns from the
+    #   new table.
+    #######################
 
+    ###############
+    # create pudl_gen
+    data_years = gc.settings.get("eia_data_years", [])
+
+    if not isinstance(data_years, list):
+        data_years = [data_years]
+    data_years = [str(y) for y in data_years]
+    s = f"""
+        SELECT
+            "plant_id_eia",
+            "generator_id",
+            "operational_status",
+            "retirement_date",
+            "planned_retirement_date",
+            "current_planned_operating_date"
+        FROM generators_eia860
+        WHERE strftime('%Y',report_date) in ({','.join('?'*len(data_years))})
     """
-    Add columns for the operating year from the various sources of information
-    """
+    pudl_gen = pd.read_sql_query(
+        s,
+        pudl_engine,
+        params=data_years,
+        parse_dates=[
+            "planned_retirement_date",
+            "retirement_date",
+            "current_planned_operating_date",
+        ],
+    )
+    pudl_gen = pudl_gen[
+        [
+            "plant_id_eia",
+            "generator_id",
+            "operational_status",
+            "retirement_date",
+            "planned_retirement_date",
+            "current_planned_operating_date",
+        ]
+    ]
+
+    ###############
+    # create pudl_gen_entity
+    generators_entity_eia = pd.read_sql_table("generators_entity_eia", pudl_engine)
+    pudl_gen_entity = generators_entity_eia.copy()
+    pudl_gen_entity = pudl_gen_entity[
+        ["plant_id_eia", "generator_id", "operating_date"]
+    ]
+
+    ###############
+    # create eia_Gen
+    eia_Gen = gc.operating_860m
+    eia_Gen = eia_Gen[
+        [
+            "utility_id_eia",
+            "utility_name",
+            "plant_id_eia",
+            "plant_name",
+            "generator_id",
+            "operating_year",
+            "planned_retirement_year",
+        ]
+    ]
+    eia_Gen = eia_Gen.loc[eia_Gen["plant_id_eia"].notna(), :]
+
+    # create identifier to connect to powergenome data
+    eia_Gen["plant_gen_id"] = (
+        eia_Gen["plant_id_eia"].astype(str) + "_" + eia_Gen["generator_id"]
+    )
+
+    ###############
+    # create eia_Gen_prop
+    eia_Gen_prop = gc.proposed_gens.reset_index()
+    eia_Gen_prop = eia_Gen_prop[
+        [
+            # "utility_id_eia",
+            # "utility_name",
+            "plant_id_eia",
+            # "plant_name",
+            "generator_id",
+            "planned_operating_year",
+        ]
+    ]
+    eia_Gen_prop = eia_Gen_prop.loc[eia_Gen_prop["plant_id_eia"].notna(), :]
+    eia_Gen_prop["plant_gen_id"] = (
+        eia_Gen_prop["plant_id_eia"].astype(str) + "_" + eia_Gen_prop["generator_id"]
+    )
+
+    ################
+    # create pg_build, showing all EIA generating units currently online
+    # (stored when running gc.create_all_generators() to create existing_gens)
+    pg_build = gc.units_model.copy()
+    pg_build["capacity_mw"] = pg_build[gc.settings.get("capacity_col", "capacity_mw")]
+
+    # apply capacity derating if needed
+    if gc.settings.get("derate_capacity"):
+        pg_build = derate_by_capacity_factor(
+            derate_techs=gc.settings.get("derate_techs", []),
+            unit_df=pg_build,
+            existing_gen_df=existing_gens,
+            cap_col="capacity_mw",
+        )
+
+    pg_build = pg_build[
+        [
+            "plant_id_eia",
+            "generator_id",
+            "unit_id_pg",
+            "planned_operating_year",
+            "planned_retirement_date",
+            "operating_date",
+            "operating_year",
+            "retirement_year",
+            "capacity_mw",
+            "capacity_mwh",
+            "technology",
+        ]
+    ]
+
+    # add in the plant+generator ids to pg_build and pudl tables (plant_id_eia + generator_id)
+    pudl_gen = plant_gen_id(pudl_gen)
+    pudl_gen_entity = plant_gen_id(pudl_gen_entity)
+    pg_build = plant_gen_id(pg_build)
+
+    # At this point we have the following data frames for reference:
+    #     pg_build: from PowerGenome gc.units_model
+    #      - planned_retirement_date
+    #      - operating_date
+    #      - operating_year
+    #      - retirement_year
+    #     pudl_gen: from PUDL generators_eia860
+    #      - retirement_date
+    #      - planned_retirement)date
+    #      - current_planned_operating_date
+    #     pudl_gen_entity: from PUDL generators_entity_eia
+    #      - operating_date
+    #     eia_Gen: eia operable plants
+    #     eia_Gen_prop: eia proposed plants
+
+    #####################
+    # Add columns for the build year or retirement to pg_build from the
+    # previously created tables
 
     # List of sources and destinations; will be searched with pg_build["plant_gen_id"]:
-    # (source_table, source_col, dest_col) or (lookup_dict, None, dest_col)
+    # (source_table, source_col, dest_col)
     column_definitions = [
         # based on pudl_gen
         (pudl_gen, "current_planned_operating_date", "op_date"),
@@ -200,34 +355,24 @@ def existing_gens_by_vintage(
         (pg_build, "retirement_year", "PG_retire_yr"),
         (pg_build, "operating_date", "PG_op_date"),
         (pg_build, "operating_year", "PG_op_yr"),
-        # based on manual_build dictionary
-        (manual_build_yr, None, "manual_yr"),
         # based on eia excel
         (eia_Gen, "operating_year", "eia_gen_op_yr"),
         (eia_Gen_prop, "planned_operating_year", "proposed_year"),
-        # based on eia excel manual dictionary
-        (plant_gen_manual, None, "eia_gen_manual_yr"),
-        (plant_gen_manual_proposed, None, "proposed_manual_year"),
-        (plant_gen_manual_retired, None, "eia_gen_retired_yr"),
     ]
 
     for source_table, source_col, dest_col in column_definitions:
-        if isinstance(source_table, dict):
-            map_dict = source_table  # using a pre-supplied dictionary
-        else:
-            # create dict of {plant_gen_id: date} from source_table
-            map_dict = create_dict_plantgen(source_table, source_col)
+        # create dict of {plant_gen_id: date} from source_table
+        map_dict = create_dict_plantgen(source_table, source_col)
         # use a lookup to define the required column
         pg_build[dest_col] = pg_build["plant_gen_id"].map(map_dict)
 
-    """
-    Manipulating the build and retirement year data
-        - change to year instead of date,
-        - bring all years into one column
-        - remove nans
-    """
+    ###################
+    # Adjust the build and retirement year data
+    #     - change to year instead of date,
+    #     - bring all years into one column
+    #     - remove nans
 
-    # the columns that have the dates as datetime
+    # columns that have the dates as datetime
     columns = [
         "operating_date",
         "op_date",
@@ -245,6 +390,7 @@ def existing_gens_by_vintage(
         except:
             pass
 
+    # get all build years into one column
     op_columns = [
         "operating_date",
         "op_date",
@@ -252,30 +398,14 @@ def existing_gens_by_vintage(
         "PG_op_date",
         "operating_year",
         "planned_operating_year",
-        "manual_yr",
         "PG_op_yr",
         "eia_gen_op_yr",
-        "eia_gen_manual_yr",
         "proposed_year",
-        "proposed_manual_year",
     ]
     pg_build["build_year"] = pg_build[op_columns].max(axis=1)
-    # get all build years into one column (includes manual dates and proposed dates)
 
-    # plant_unit_tech = all_gen.dropna(subset=["plant_pudl_id"])[
-    #     ["plant_pudl_id", "technology"]
-    # ]
-    # plant_unit_tech = plant_unit_tech.drop_duplicates(subset=["plant_pudl_id"])
-    # plant_unit_tech = plant_unit_tech.set_index("plant_pudl_id")["technology"]
-    # pg_build["technology"] = pg_build["plant_pudl_id"].map(plant_unit_tech)
-    # pg_build["retirement_age"] = pg_build["technology"].map(retirement_ages)
-    # pg_build["retirement_age"] = [[float(i) for i in pg_build["retirement_age"]]]
-
-    # pg_build["retirement_age"] = [
-    #     val
-    #     for key, val in retirement_ages.items()
-    #     if pg_build["technology"].str.contains(key, case=False)
-    # ]
+    # set retirement age
+    retirement_ages = gc.settings.get("retirement_ages")
     retirement_ages = {k.lower(): v for k, v in retirement_ages.items()}
     pg_build["technology"] = pg_build["technology"].str.lower()
     pg_build["retirement_age"] = pg_build["technology"].apply(
@@ -286,10 +416,11 @@ def existing_gens_by_vintage(
     )
     pg_build["retirement_age"] = pg_build["retirement_age"].astype(float)
 
+    # set retirement date
     pg_build["calc_retirement_year"] = (
         pg_build["build_year"] + pg_build["retirement_age"]
     )
-    if not pg_build.query("retirement_age.isna()").empty:
+    if pg_build["retirement_age"].isna().any():
         missing_techs = pg_build.query("retirement_age.isna()")["technology"].unique()
         print(f"The technologies {missing_techs} do not have retirement ages.")
     ret_columns = [
@@ -299,242 +430,101 @@ def existing_gens_by_vintage(
         "retirement_date",
         "PG_pl_retire",
         "PG_retire_yr",
-        "eia_gen_retired_yr",
         "calc_retirement_year",
     ]
-    pg_build["retirement_year"] = pg_build[ret_columns].min(axis=1)
+    pg_build["retirement_year"] = pg_build[ret_columns].min(axis=1).astype("Int64")
 
-    """
-    Start creating the gen_build_predetermined table
-    """
-    # base it off of PowerGenome all_gen
-    gen_buildpre = all_gen.copy()
-    # Use the unique "Resource" column for the generation project ID
-    gen_buildpre["GENERATION_PROJECT"] = gen_buildpre["Resource"]
-    gen_buildpre = gen_buildpre.loc[
-        :,
-        [
-            # "index",
-            "GENERATION_PROJECT",
-            "plant_id_eia",
-            "Existing_Cap_MW",  # it was "Cap_Size",
-            "capex_mwh",  # Should it be "capex_mwh" or 'Existing_Cap_MWh'?
-            "region",
-            "plant_pudl_id",
-            "technology",
-        ],
-    ]
-
-    # this ignores new builds
-    new_builds = gen_buildpre[gen_buildpre["Existing_Cap_MW"].isna()]
-    gen_buildpre = gen_buildpre[gen_buildpre["Existing_Cap_MW"].notna()]
-
-    # lookup build_year from pg_build
-    gen_buildpre = pd.merge(
-        gen_buildpre,
-        pg_build[
-            [
-                "plant_pudl_id",
-                "build_year",
-                "retirement_year",
-                capacity_col,
-                "capacity_mwh",
-            ]
-        ],
-        how="left",
+    # for all plants that have a retirement year, make the build year
+    # consistent, so Switch will retire them when planned
+    mask = pg_build["retirement_year"].notna() & pg_build["retirement_age"].notna()
+    pg_build.loc[mask, "build_year"] = (
+        pg_build.loc[mask, "retirement_year"] - pg_build.loc[mask, "retirement_age"]
     )
-    # pg_build_buildyr = create_dict_plantpudl(pg_build, "build_final")
-    # gen_buildpre["build_year"] = gen_buildpre["plant_pudl_id"].apply(
-    #     lambda x: plant_dict(x, pg_build_buildyr)
-    # )
+    # done with pg_build (info on all units known to PowerGenome)
+    #################
 
-    # # create dictionary to go from pg_build to gen_buildpre (retirement_year)
-    # pg_build_retireyr = create_dict_plantpudl(pg_build, "retire_year_final")
-    # gen_buildpre["retirement_year"] = gen_buildpre["plant_pudl_id"].apply(
-    #     lambda x: plant_dict(x, pg_build_retireyr)
-    # )
+    #####################
+    # Create gen_units, with one row for each unit making up the clusters
+    # in existing_gens
+    row_list = []
+    for row in existing_gens.itertuples():
+        if isinstance(row.plant_id_eia, list):
+            for plant_id, unit_id in zip(row.plant_id_eia, row.unit_id_pg):
+                new_row = row._replace(plant_id_eia=plant_id, unit_id_pg=unit_id)
+                row_list.append(new_row)
+        else:
+            row_list.append(row)
+    gen_units = pd.DataFrame(row_list)
+    gen_units["plant_id_eia"] = gen_units["plant_id_eia"].astype("Int64")
 
-    # for plants that still don't have a build year but have a retirement year.
-    # Base build year off of retirement year: retirement year - retirement age (based on technology)
-    # check to see if it is na or None if you get blank build years
-    mask = gen_buildpre["build_year"] == "None"
-    nans = gen_buildpre[mask]
+    #############
+    # attach build data from pg_build to gen_units
 
-    if not nans.empty:
-        gen_buildpre.loc[mask, "build_year"] = nans.apply(
-            lambda row: float(row.retirement_year) - retirement_ages[row.technology],
-            axis=1,
+    # make sure we can uniquely match back to rows in gen_info (and by extension
+    # back to existing_gens). Note: unit_id_pg is duplicated fairly often, so
+    # (plant_id_eia, unit_id_pg) doesn't quite make a unique ID for rows in
+    # gen_units. However, (technology, plant_id_eia, unit_id_pg) seems to work,
+    # at least for now.
+
+    for df in [gen_units, pg_build]:
+        df["unit_id"] = (
+            df["technology"].astype(str).str.lower()
+            + "_"
+            + df["plant_id_eia"].astype(str).str.lower()
+            + "_"
+            + df["unit_id_pg"].astype(str).str.lower()
         )
 
-    # Distributed generation and a few others are in all_gen with
-    # non-zero Existing_Cap_MW, but no plant_pudl_id and therefore
-    # no build_year or capacity_col. For now, we fill those in with
-    # dummy values for distributed generation (only) so they won't
-    # get dropped from the table below.
-    # TODO: fix this upstream in PowerGenome, e.g., create dummy plant
-    # construction info there in addition to the overall project info
-    # Note that Existing_Cap_MW is the cluster size, not the size of
-    # sub-units that were added over time, so this assumes there is only
-    # one cluster per resource.
-    mask = gen_buildpre["plant_pudl_id"].isna() & (
-        gen_buildpre["technology"] == "distributed_generation"
+    # first, drop any duplicated ID columns within the same Resource in
+    # gen_units to prevent double-matching (doesn't currently happen, but
+    # could in principle)
+    gen_units = gen_units.drop_duplicates(subset=["Resource", "unit_id"])
+    # make sure there are no duplicated keys across resources (if so, we will
+    # need to prorate them somehow, or upgrade PowerGenome to include
+    # generator_id in gc.units_model)
+    assert not gen_units.duplicated(subset="unit_id", keep=False).any(), (
+        "There are duplicate (technology, plant_id_eia, unit_id_pg) values between "
+        "different Resources in PowerGenome; unable to link unit-level data back "
+        "to the Resources."
     )
-    gen_buildpre.loc[mask, "build_year"] = 2022
-    gen_buildpre.loc[mask, capacity_col] = gen_buildpre["Existing_Cap_MW"]
 
-    # filter to final columns
-    gen_buildpre = gen_buildpre[
-        ["GENERATION_PROJECT", "build_year", capacity_col, "capacity_mwh"]
+    out_cols = [
+        "plant_gen_id",
+        "build_year",
+        "retirement_year",
+        "capacity_mw",
+        "capacity_mwh",
     ]
-
-    # don't include new builds
-    #     gen_buildpre_combined = pd.concat([gen_buildpre, new_builds2020, new_builds2030, new_builds2040, new_builds2050],
-    #                                      ignore_index=True)
-    #     gen_buildpre = gen_buildpre.append([new_builds2020, new_builds2030, new_builds2040, new_builds2050],
-    #                                        ignore_index=True)
-
-    gen_buildpre.rename(
-        columns={
-            capacity_col: "build_gen_predetermined",
-            "capacity_mwh": "build_gen_energy_predetermined",
-        },
-        inplace=True,
+    gen_units = pd.merge(
+        gen_units,
+        pg_build[["unit_id"] + out_cols],
+        on="unit_id",
+        how="left",
     )
+    gen_units["build_year"] = gen_units["build_year"].astype("Int64")
 
-    gen_buildpre["build_year"] = gen_buildpre["build_year"].astype("Int64")
-    gen_buildpre = gen_buildpre.groupby(
-        ["GENERATION_PROJECT", "build_year"],
-        as_index=False,
-        dropna=False,
-        sort=False,
-    ).sum()
-    # based on REAM
-    gen_buildpre["build_gen_energy_predetermined"] = gen_buildpre[
-        "build_gen_energy_predetermined"
-    ].fillna(".")
-    gen_buildpre["build_gen_energy_predetermined"] = gen_buildpre[
-        "build_gen_energy_predetermined"
-    ].replace(0, ".")
-    gen_buildpre = gen_buildpre.dropna(subset=["build_year"])
+    if gen_units["build_year"].isna().any():
+        print("Ignoring existing generating units that have no build_year assigned:")
+        print(
+            gen_units.loc[
+                gen_units["build_year"].isna(), ["Resource", "unit_id"] + out_cols
+            ]
+        )
+        # raise ValueError("Some existing generating units have no build_year assigned")
+        gen_units = gen_units.dropna(subset="build_year")
 
-    #     gen_buildpre['GENERATION_PROJECT'] = gen_buildpre['GENERATION_PROJECT'].astype(str)
-
-    # SWITCH doesn't like having build years that are in the period
-    gen_buildpre.drop(
-        gen_buildpre[gen_buildpre["build_year"] == 2020].index, inplace=True
-    )
-
-    return gen_buildpre
+    return gen_units[["Resource"] + out_cols]
 
 
-def gen_build_costs_table(settings, existing_gen, newgens):
-    """
-    Create gen_build_costs table
-    Inputs
-        pandas dataframes
-            existing_gen - from PowerGenome gc.create_region_technology_clusters()
-            new_gen_2020 - created by the gen_build_costs notebook
-            new_gen_2030 - created by the gen_build_costs notebook
-            new_gen_2040 - created by the gen_build_costs notebook
-            new_gen_2050 - created by the gen_build_costs notebook
-            all_gen - created by PowerGenome
-        build_yr_plantid_dict - maps {generation_project: build_year}
-
-    Output columns
-        * GENERATION_PROJECT: based on index
-        * build_year: based off of the build years from gen_build_predetermined
-        * gen_overnight_cost: is 0 for existing, and uses PG capex_mw values for new generators
-        * gen_fixed_om: is 0 for existing, and uses PG Fixed_OM_Cost_per_MWyr for new gen
-        * gen_storage_energy_overnight_cost: is 0 for existing and uses PG capex_mwh for new generators
-    """
-
-    existing = existing_gen.copy()
-    # print("Check for how we can get better fixed_om costs")
-    # breakpoint()
-
-    existing["gen_overnight_cost"] = 0
-    existing["gen_fixed_om"] = 0
-    existing["gen_storage_energy_overnight_cost"] = 0
-    existing["gen_storage_energy_fixed_om"] = 0
-    existing = existing[
-        [
-            "GENERATION_PROJECT",
-            "build_year",
-            "gen_overnight_cost",
-            "gen_fixed_om",
-            "gen_storage_energy_overnight_cost",
-            "gen_storage_energy_fixed_om",
-        ]
-    ]
-
-    # df_list = []
-    # for year, df in newgens.groupby("build_year"):
-    #     # start the new GENERATION_PROJECT ids from the end of existing_gen (should tie out to same as gen_proj_info)
-    #     df["GENERATION_PROJECT"] = df["GENERATION_PROJECT"] + f"_{year}"
-    #     df_list.append(df)
-    # combined_new_gens = pd.concat(df_list)
-
-    # combined_new_gens["gen_fixed_om"] = combined_new_gens[
-    #     "Fixed_OM_Cost_per_MWyr"
-    # ].apply(lambda x: x * 1000)
-    newgens["gen_fixed_om"] = newgens["Fixed_OM_Cost_per_MWyr"]
-    newgens["gen_storage_energy_fixed_om"] = newgens["Fixed_OM_Cost_per_MWhyr"]
-    newgens["gen_storage_energy_fixed_om"] = newgens[
-        "gen_storage_energy_fixed_om"
-    ].replace("", 0, regex=True)
-    newgens.drop("Fixed_OM_Cost_per_MWyr", axis=1, inplace=True)
-    for col in ["capex_mw", "capex_mwh"]:
-        newgens[col] = newgens[col] * newgens["regional_cost_multiplier"]
-    newgens.rename(
-        columns={
-            "capex_mw": "gen_overnight_cost",
-            "capex_mwh": "gen_storage_energy_overnight_cost",
-        },
-        inplace=True,
-    )
-
-    newgens = newgens[
-        [
-            "GENERATION_PROJECT",
-            "build_year",
-            "gen_overnight_cost",
-            "gen_fixed_om",
-            "gen_storage_energy_overnight_cost",
-            "gen_storage_energy_fixed_om",
-        ]
-    ]
-    ## if running an operation model, remove all candidate projects.
-    if settings.get("operation_model") is True:
-        newgens = pd.DataFrame()
-
-    gen_build_costs = existing.append(newgens, ignore_index=True)
-
-    gen_build_costs["build_year"] = gen_build_costs["build_year"].astype("Int64")
-    gen_build_costs = gen_build_costs.groupby(
-        ["GENERATION_PROJECT", "build_year"], as_index=False
-    ).mean()
-    #     gen_build_costs.drop('index', axis=1, inplace=True)
-
-    # gen_storage_energy_overnight_cost should only be for batteries
-    gen_build_costs.loc[
-        ~gen_build_costs["GENERATION_PROJECT"].str.contains(
-            "batter|storage", case=False
-        ),
-        "gen_storage_energy_overnight_cost",
-    ] = "."
-
-    return gen_build_costs
-
-
-def generation_projects_info(
-    all_gen,
+def gen_info_table(
+    all_gens,
     spur_capex_mw_mile,
     retirement_age,
 ):
     """
-    Create the generation_projects_info table based on REAM scenario 178.
+    Create the generation_projects_info table
     Inputs:
-        * all_gen: from PowerGenome gc.create_all_generators()
+        * gens: from PowerGenome gc.create_all_generators() with some extra data
         * spur_capex_mw_mile: based on the settings file ('transmission_investment_cost')['spur']['capex_mw_mile']
         * retirement age: pulled from settings
         * cogen_tech, baseload_tech, energy_tech, sched_outage_tech, forced_outage_tech
@@ -546,111 +536,85 @@ def generation_projects_info(
         * gen_load_zone: IPM region
         * gen_max_age: based on retirement_age
         * gen_is_variable: only solar and wind are true
-        * gen_is_baseload: based on baseload_tech
+        * gen_is_baseload: from PowerGenome
         * gen_full_load_heat_rate: based on Heat_Rate_MMBTU_per_MWh from all_gen
-            - if the energy_source is in the non_fuel_energy_sources, this should be '.'
         * gen_variable_om: based on var_om_cost_per_MWh from all_gen
-        * gen_connect_cost_per_mw: based on spur_capex_mw_mile * spur_miles; ## plus substation cost
+        * gen_connect_cost_per_mw: based on spur_capex_mw_mile * spur_miles plus substation cost
         * gen_dbid: same as generation_project
-        * gen_scheduled_outage_rate: based on sched_outage_tech
-        * gen_forced_outage_rate: based on forced_outage_tech
-        * gen_capacity_limit_mw: based on Existing_Cap_MW from all_gen; ## should be . to new thermo plants, should be upper limits on new renewables(millions MW total across all).
-        * gen_min_build_capacity: based on REAM using 0 for now
-        * gen_is_cogen: based on cogen_tech input
-        * gen_storage_efficiency: based on REAM scenario 178.  batteries use 0.75
-        * gen_store_to_release_ratio: based on REAM scenario 178. batteries use 1
-        * gen_can_provide_cap_reserves: based on REAM, all 1s
-        * gen_self_discharge_rate, gen_discharge_efficiency, gen_land_use_rate, gen_storage_energy_to_power_ratio:
-            blanks based on REAM
+        * gen_scheduled_outage_rate: from PowerGenome
+        * gen_forced_outage_rate: from PowerGenome
+        * gen_capacity_limit_mw: omitted for new thermal plants; upper limits on new renewables (MW total across all).
+        * gen_is_cogen: from PowerGenome
+        * gen_storage_efficiency: from PowerGenome
+        * gen_store_to_release_ratio: batteries use 1
+        * gen_can_provide_cap_reserves: all 1s
+        * gen_min_build_capacity: 0
+        * gen_self_discharge_rate, gen_storage_energy_to_power_ratio: blanks
     """
 
-    gen_project_info = all_gen.copy().reset_index(drop=True)
-    gen_project_info["technology"] = gen_project_info["technology"].str.rstrip("_")
-    gen_project_info["GENERATION_PROJECT"] = gen_project_info["Resource"]
+    gen_info = all_gens.copy().reset_index(drop=True)
+
+    gen_info["GENERATION_PROJECT"] = gen_info["Resource"]
     # TODO Change the upstream powergenome code to set up co2_pipeline_capex_mw as 0 when no access to ccs tech
     # for now, modifyng the translation layer --RR
-    if "co2_pipeline_capex_mw" not in gen_project_info.columns:
-        gen_project_info["co2_pipeline_capex_mw"] = 0
+    if "co2_pipeline_capex_mw" not in gen_info.columns:
+        gen_info["co2_pipeline_capex_mw"] = 0
 
     # Include co2 pipeline costs as part of connection -- could also be in build capex
-    gen_project_info["gen_connect_cost_per_mw"] = gen_project_info[
+    gen_info["gen_connect_cost_per_mw"] = gen_info[
         ["spur_capex", "interconnect_capex_mw", "co2_pipeline_capex_mw"]
     ].sum(axis=1)
 
     # create gen_connect_cost_per_mw from spur_miles and spur_capex_mw_mile
-    gen_project_info["spur_capex_mw_mi"] = gen_project_info["region"].apply(
+    gen_info["spur_capex_mw_mi"] = gen_info["region"].apply(
         lambda x: spur_capex_mw_mile[x]
     )
-    gen_project_info["spur_miles"] = gen_project_info["spur_miles"].fillna(0)
-    gen_project_info.loc[
-        gen_project_info["gen_connect_cost_per_mw"] == 0, "gen_connect_cost_per_mw"
-    ] = (gen_project_info["spur_capex_mw_mi"] * gen_project_info["spur_miles"])
-    gen_project_info = gen_project_info.drop(["spur_miles", "spur_capex_mw_mi"], axis=1)
+    gen_info["spur_miles"] = gen_info["spur_miles"].fillna(0)
+    gen_info.loc[
+        gen_info["gen_connect_cost_per_mw"] == 0, "gen_connect_cost_per_mw"
+    ] = (gen_info["spur_capex_mw_mi"] * gen_info["spur_miles"])
+    gen_info = gen_info.drop(["spur_miles", "spur_capex_mw_mi"], axis=1)
 
     # for gen_is_variable - only solar and wind technologies are true
-    technology = all_gen["technology"].to_list()
+    technology = gen_info["technology"].to_list()
 
     def Filter(list1, list2):
         return [n for n in list1 if any(m in n for m in list2)]
 
-    gen_project_info["gen_is_variable"] = gen_project_info["gen_is_variable"].astype(
-        bool
-    )
-    # gen_storage_efficiency and gen_store_to_release_ratio: battery info based on REAM
+    gen_info["gen_is_variable"] = gen_info["gen_is_variable"].astype(bool)
+    # gen_storage_efficiency and gen_store_to_release_ratio
     battery = set(Filter(technology, ["Battery", "Batteries", "Storage"]))
-    gen_project_info.loc[
-        gen_project_info["technology"].isin(battery), "gen_storage_efficiency"
-    ] = (gen_project_info[["Eff_Up", "Eff_Down"]].mean(axis=1) ** 2)
-    gen_project_info["gen_storage_efficiency"] = gen_project_info[
-        "gen_storage_efficiency"
-    ].fillna(".")
-    gen_project_info.loc[
-        gen_project_info["technology"].isin(battery), "gen_store_to_release_ratio"
-    ] = 1
-    gen_project_info["gen_store_to_release_ratio"] = gen_project_info[
-        "gen_store_to_release_ratio"
-    ].fillna(".")
-    # additional columns based on REAM
-    gen_project_info["gen_min_build_capacity"] = 0  # REAM is just 0 or .
-    gen_project_info["gen_can_provide_cap_reserves"] = (
-        1  # all ones in scenario 178. either 1 or 0
+    gen_info.loc[gen_info["technology"].isin(battery), "gen_storage_efficiency"] = (
+        gen_info["Eff_Up"] * gen_info["Eff_Down"]
     )
+    gen_info.loc[gen_info["technology"].isin(battery), "gen_store_to_release_ratio"] = 1
+    gen_info["gen_min_build_capacity"] = 0
+    gen_info["gen_can_provide_cap_reserves"] = 1
 
-    # these are blanks in scenario 178
-    gen_project_info["gen_self_discharge_rate"] = "."
-    gen_project_info["gen_discharge_efficiency"] = "."
-    gen_project_info["gen_land_use_rate"] = "."
-    gen_project_info["gen_storage_energy_to_power_ratio"] = "."
+    gen_info["gen_self_discharge_rate"] = None
+    gen_info["gen_storage_energy_to_power_ratio"] = None
 
     # retirement ages based on settings file still need to be updated
-    # gen_project_info["gen_max_age"] = gen_project_info["technology"].map(retirement_age)
     for tech, age in retirement_age.items():
-        gen_project_info.loc[
-            gen_project_info["technology"].str.contains(tech, case=False), "gen_max_age"
+        gen_info.loc[
+            gen_info["technology"].str.contains(tech, case=False), "gen_max_age"
         ] = age
     # Tell user about missing retirement ages
-    if not gen_project_info.query("gen_max_age.isna()").empty:
-        missing_ret_tech = gen_project_info.query("gen_max_age.isna()")[
-            "technology"
-        ].unique()
+    if gen_info["gen_max_age"].isna().any():
+        missing_ret_tech = gen_info.query("gen_max_age.isna()")["technology"].unique()
         print(
             f"The technologies {missing_ret_tech} do not have a valid retirement age in "
             "your settings file."
         )
 
-    # GENERATION_PROJECT - the all_gen.index column has NaNs for the new generators.  Use actual index for all_gen
-    # gen_project_info["GENERATION_PROJECT"] = gen_project_info.index + 1
-    gen_project_info["gen_dbid"] = gen_project_info["GENERATION_PROJECT"]
+    gen_info["gen_dbid"] = gen_info["GENERATION_PROJECT"]
 
-    # gen_capacity_limit_mw - edit by RR,
-    # it was from 'Existing_Cap_MW' only, now takes the max of "Existing_Cap_MW" and "Max_Cap_MW" for new renewables.
-    gen_project_info["gen_capacity_limit_mw"] = gen_project_info["Existing_Cap_MW"]
-    gen_project_info.loc[
-        gen_project_info["gen_is_variable"] == True, "gen_capacity_limit_mw"
-    ] = gen_project_info[["Existing_Cap_MW", "Max_Cap_MW"]].max(axis=1)
+    gen_info.loc[gen_info["gen_is_variable"], "gen_capacity_limit_mw"] = gen_info[
+        "Max_Cap_MW"
+    ]
 
     # rename columns
-    gen_project_info.rename(
+    gen_info.rename(
         columns={
             "technology": "gen_tech",
             "region": "gen_load_zone",
@@ -658,12 +622,12 @@ def generation_projects_info(
             "Var_OM_Cost_per_MWh": "gen_variable_om",
         },
         inplace=True,
-    )  #'index':'GENERATION_PROJECT',
-    # drop heat_load_shifting (not in SWITCH)
-    gen_project_info.drop(
-        gen_project_info[gen_project_info["gen_tech"] == "heat_load_shifting"].index,
-        inplace=True,
     )
+
+    # use zero instead of NaN for some columns (other NaNs will get converted
+    # to "." for Switch when saving later)
+    gen_info["gen_variable_om"] = gen_info["gen_variable_om"].fillna(0)
+    gen_info["gen_connect_cost_per_mw"] = gen_info["gen_connect_cost_per_mw"].fillna(0)
 
     cols = [
         "GENERATION_PROJECT",
@@ -686,8 +650,6 @@ def generation_projects_info(
         "gen_store_to_release_ratio",
         "gen_can_provide_cap_reserves",
         "gen_self_discharge_rate",
-        "gen_discharge_efficiency",
-        "gen_land_use_rate",
         "gen_ccs_capture_efficiency",
         "gen_ccs_energy_load",
         "gen_storage_energy_to_power_ratio",
@@ -715,24 +677,8 @@ def generation_projects_info(
         "MinCapTag_5",
     ]  # index
 
-    # remove NaN
-    gen_project_info["gen_variable_om"] = gen_project_info["gen_variable_om"].fillna(0)
-    # gen_project_info['gen_connect_cost_per_mw'] = gen_project_info['gen_variable_om'].fillna(0)
-    # gen_project_info['gen_capacity_limit_mw'] = gen_project_info['gen_variable_om'].fillna('.')
-
-    gen_project_info["gen_connect_cost_per_mw"] = gen_project_info[
-        "gen_connect_cost_per_mw"
-    ].fillna(0)
-    gen_project_info["gen_capacity_limit_mw"] = gen_project_info[
-        "gen_capacity_limit_mw"
-    ].fillna(".")
-
-    gen_project_info["gen_full_load_heat_rate"] = gen_project_info[
-        "gen_full_load_heat_rate"
-    ].replace(0, ".")
-
-    gen_project_info = gen_project_info[cols]
-    return gen_project_info
+    gen_info = gen_info[cols]
+    return gen_info
 
 
 hydro_forced_outage_tech = {

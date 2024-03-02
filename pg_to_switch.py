@@ -48,17 +48,11 @@ from powergenome.co2_pipeline_cost import merge_co2_pipeline_costs
 
 
 from conversion_functions import (
-    derate_by_capacity_factor,
     switch_fuel_cost_table,
     switch_fuels,
-    create_dict_plantgen,
-    create_dict_plantpudl,
-    plant_dict,
-    plant_gen_id,
-    plant_pudl_id,
-    existing_gens_by_vintage,
-    gen_build_costs_table,
-    generation_projects_info,
+    add_generic_gen_build_info,
+    eia_build_info,
+    gen_info_table,
     hydro_time_tables,
     load_zones_table,
     fuel_market_tables,
@@ -77,6 +71,10 @@ from conversion_functions import (
     hydro_system_module_tables,
     variable_cf_pg_kmeans,
     load_pg_kmeans,
+    first_key,
+    first_value,
+    final_key,
+    final_value,
 )
 
 from powergenome.load_profiles import (
@@ -90,25 +88,6 @@ if not sys.warnoptions:
     import warnings
 
     warnings.simplefilter("ignore")
-
-
-# convenience functions to get first/final keys/values from dicts
-# (e.g., first year in a dictionary organized by years)
-# note: these use the order of creation, not lexicographic order
-def first_key(d: dict):
-    return next(iter(d.keys()))
-
-
-def first_value(d: dict):
-    return next(iter(d.values()))
-
-
-def final_key(d: dict):
-    return next(reversed(d.keys()))
-
-
-def final_value(d: dict):
-    return next(reversed(d.values()))
 
 
 def fuel_files(
@@ -213,113 +192,66 @@ def generator_and_load_files(
 
     """
 
+    # TODO: maybe move all the arguments into an `options` dict that can be
+    # passed to all the functions, so we don't have to worry about which
+    # functions need which arguments
+
     out_folder.mkdir(parents=True, exist_ok=True)
     first_year_settings = first_value(scen_settings_dict)
 
-    all_gen = pg_generator_params(gc, first_year_settings)
-
-    existing_gen, all_gen_units, existing_gen_units = existing_gen_info(
-        gc, pudl_engine, first_year_settings, all_gen
-    )
-
-    new_gen_list, newgens = new_gen_info(gc, scen_settings_dict)
-
-    ###########################################################
-    # check how to deal with the plants below in other models #
-    ###########################################################
-    # remove plants registered/filed after the first year of model year
-    # otherwise it causes problems in switch post solve
-
-    # TODO: make sure filtering matches Switch's own filtering and don't
-    # duplicate between here and conversion_functions.gen_build_costs_table()
-
-    first_period_first_year = first_year_settings["model_first_planning_year"]
-    existing_gen_units = existing_gen_units.loc[
-        existing_gen_units["build_year"] <= first_period_first_year
-    ]
-    to_remove_cap = (
-        existing_gen_units.loc[
-            existing_gen_units["build_year"] > first_period_first_year
-        ]
-        .groupby("GENERATION_PROJECT", as_index=False)
-        .agg(
-            {
-                "GENERATION_PROJECT": "first",
-                "build_gen_predetermined": "sum",
-            }
-        )
-    )
-    existing_gen["reduce_capacity"] = (
-        existing_gen["Resource"]
-        .map(to_remove_cap.set_index("GENERATION_PROJECT")["build_gen_predetermined"])
-        .fillna(0)
-    )
-    existing_gen["Existing_Cap_MW"] = (
-        pd.to_numeric(existing_gen["Existing_Cap_MW"], errors="coerce")
-        - existing_gen["reduce_capacity"]
-    )
-    existing_gen = existing_gen[existing_gen["Existing_Cap_MW"] > 0].drop(
-        ["reduce_capacity"], axis=1
+    # get tables of generators, organized by model_year or build_year
+    # (model_year shows generators active in a particular model year, used for
+    # gathering operational data like variable capacity factors; build_year
+    # shows gens built in a particular year, used to gather construction data
+    # like capital cost and capacity built)
+    gens_by_model_year, gens_by_build_year = gen_tables(
+        gc, pudl_engine, scen_settings_dict
     )
 
     #########
     # create Switch input files from these tables
 
-    # TODO: probably need to move this below the operation_model filtering
-    gen_build_costs_file(first_year_settings, existing_gen_units, newgens, out_folder)
+    gen_build_costs_file(gens_by_build_year, out_folder)
 
-    # Create a complete list of existing and new-build options
-    ## if running an operation model, remove all candidate projects.
-    if first_year_settings.get("operation_model", False):
-        newgens = pd.DataFrame()
-    complete_gens = pd.concat([existing_gen, newgens]).drop_duplicates(
-        subset=["Resource"]
-    )
-    complete_gens = add_misc_gen_values(complete_gens, first_year_settings)
+    # this could use either gens_by_model_year or gens_by_build_year, since it
+    # just uses one row for each gen
+    # We have to send the fuel prices so it can check which gens use a real fuel
+    # and which don't, because PowerGenome gives a heat rate for all of them.
+    gen_info_file(first_year_settings, gens_by_model_year, all_fuel_prices, out_folder)
 
-    gen_info_file(
-        all_fuel_prices,
-        complete_gens,
-        first_year_settings,
-        out_folder,
-        existing_gen_units,
-    )
+    # balancing_tables(first_year_settings, pudl_engine, all_gen_units, out_folder)
 
-    balancing_tables(first_year_settings, pudl_engine, all_gen_units, out_folder)
+    gen_build_predetermined_file(gens_by_build_year, out_folder)
 
-    gen_build_predetermined_file(existing_gen_units, out_folder)
-
-    time_varying_files(
+    operational_files(
         scen_settings_dict,
         pg_engine,
         hydro_variability_new,
-        existing_gen,
-        new_gen_list,
+        gens_by_model_year,
         out_folder,
     )
 
 
-def time_varying_files(
+def operational_files(
     scen_settings_dict,
     pg_engine,
     hydro_variability_new,
-    existing_gen,
-    new_gen_list,
+    gens_by_model_year,
     out_folder,
 ):
-    timepoint_start = 1
-    output = collections.defaultdict(list)  # will hold all years of each type of
+    """
+    Create all files describing time-varying operation of the system, i.e.,
+    for loads, hydro, variable capacity factors for renewables, etc.
+    """
 
     timepoint_start = 1
-    for year_settings, period_ng in zip(
-        scen_settings_dict.values(),
-        new_gen_list,
-    ):
-        ## if running an operation model, remove all candidate projects.
-        if year_settings.get("operation_model") is True:
-            period_ng = pd.DataFrame()
+    # will hold all years of each type of data
+    output = collections.defaultdict(list)
 
-        period_all_gen = pd.concat([existing_gen, period_ng])
+    timepoint_start = 1
+    for model_year, year_settings in scen_settings_dict.items():
+
+        period_all_gen = gens_by_model_year.query("model_year == @model_year")
         period_all_gen_variability = make_generator_variability(period_all_gen)
         period_all_gen_variability.columns = period_all_gen["Resource"]
         if "gen_is_baseload" in period_all_gen.columns:
@@ -330,6 +262,7 @@ def time_varying_files(
                 ].to_list(),
             )
 
+        # TODO: is this needed? can it be eliminated by improvements upstream?
         # ####### add by Rangrang, need to discuss further about CF of hydros in MIS_D_MD
         # change the variability of hyfro generators in MIS_D_MS
         # the profiles for them were missing and were filled with 1, which does not make sense since
@@ -529,189 +462,70 @@ def time_varying_files(
         pd.concat(dfs).to_csv(out_folder / file, index=False)
 
 
-def gen_build_costs_file(first_year_settings, existing_gen_units, newgens, out_folder):
-    # TODO: maybe move gen_build_costs_table code into this function
-    gen_build_costs = gen_build_costs_table(
-        first_year_settings, existing_gen_units, newgens
+def gen_build_costs_file(gens_by_build_year, out_folder):
+    """
+    Input:
+        * gens_by_build_year: from gen_tables, based on gc.create_all_gens
+        * out_folder: directory to store the output
+    Output columns
+        * GENERATION_PROJECT: Resourc
+        * build_year: based off of the build years from gens_by_build_year
+        * gen_overnight_cost: uses PG capex_mw and regional_cost_multiplier
+        * gen_fixed_om: uses PG Fixed_OM_Cost_per_MWyr for all generators
+        * gen_storage_energy_overnight_cost: uses PG capex_mw and regional_cost_multiplier
+        * gen_storage_energy_fixed_om: PG Fixed_OM_Cost_per_MWhyr for all generators
+    """
+    defs = {
+        "GENERATION_PROJECT": "Resource",
+        "BUILD_YEAR": "build_year",
+        "gen_overnight_cost": "capex_mw * regional_cost_multiplier",
+        "gen_fixed_om": "Fixed_OM_Cost_per_MWyr",
+        "gen_storage_energy_overnight_cost": "capex_mwh * regional_cost_multiplier",
+        "gen_storage_energy_fixed_om": "Fixed_OM_Cost_per_MWhyr",
+    }
+
+    gen_build_costs = pd.DataFrame(
+        {col: gens_by_build_year.eval(expr) for col, expr in defs.items()}
     )
-    gen_build_costs.to_csv(out_folder / "gen_build_costs.csv", index=False)
+
+    gen_build_costs.to_csv(out_folder / "gen_build_costs.csv", index=False, na_rep=".")
 
 
-def gen_build_predetermined_file(existing_gen_units, out_folder):
+def gen_build_predetermined_file(gens_by_build_year, out_folder):
+    """
+    Output columns
+        * GENERATION_PROJECT: Resource from gens_by_build_year
+        * build_year: from gens_by_build_year
+        * build_gen_predetermined: based on capacity_mw from gens_by_build_year
+        * build_gen_energy_predetermined: based on capacity_mwh from gens_by_build_year
+    """
+
     # write the relevant columns out for Switch
-    gen_build_predetermined_cols = [
-        "GENERATION_PROJECT",
-        "build_year",
-        "build_gen_predetermined",
-        "build_gen_energy_predetermined",
-    ]
+    gbp_cols = {
+        "Resource": "GENERATION_PROJECT",
+        "build_year": "build_year",
+        "capacity_mw": "build_gen_predetermined",
+        "capacity_mwh": "build_gen_energy_predetermined",
+    }
 
-    existing_gen_units[gen_build_predetermined_cols].to_csv(
-        out_folder / "gen_build_predetermined.csv", index=False
-    )
+    gbp = gens_by_build_year.loc[gens_by_build_year["existing"], gbp_cols.keys()]
+    gbp = gbp.rename(columns=gbp_cols)
+
+    gbp.to_csv(out_folder / "gen_build_predetermined.csv", index=False, na_rep=".")
 
 
 def gen_info_file(
+    settings,
+    gens_by_model_year: pd.DataFrame,
     fuel_prices: pd.DataFrame,
-    complete_gens: pd.DataFrame,
-    settings: dict,
     out_folder: Path,
-    gen_buildpre: pd.DataFrame,
 ):
-    if settings.get("cogen_tech"):
-        cogen_tech = settings["cogen_tech"]
-    else:
-        cogen_tech = {
-            "Onshore Wind Turbine": False,
-            "Biomass": False,
-            "Conventional Hydroelectric": False,
-            "Conventional Steam Coal": False,
-            "Natural Gas Fired Combined Cycle": False,
-            "Natural Gas Fired Combustion Turbine": False,
-            "Natural Gas Steam Turbine": False,
-            "Nuclear": False,
-            "Solar Photovoltaic": False,
-            "Hydroelectric Pumped Storage": False,
-            "Offshore Wind Turbine": False,
-            "OffShoreWind_Class1_Moderate_fixed_1": False,
-            "Landbased Wind Turbine": False,
-            "Small Hydroelectric": False,
-            "NaturalGas_CCCCSAvgCF_Conservative": False,
-            "NaturalGas_CCAvgCF_Moderate": False,
-            "NaturalGas_CTAvgCF_Moderate": False,
-            "Battery_*_Moderate": False,
-            "NaturalGas_CCS100_Moderate": False,
-            "heat_load_shifting": False,
-            "UtilityPV_Class1_Moderate": False,
-            "UtilityPV_Class1_Moderate_100": False,
-        }
-    if settings.get("baseload_tech"):
-        baseload_tech = settings.get("baseload_tech")
-    else:
-        baseload_tech = {
-            "Onshore Wind Turbine": False,
-            "Biomass": False,
-            "Conventional Hydroelectric": False,
-            "Conventional Steam Coal": True,
-            "Natural Gas Fired Combined Cycle": False,
-            "Natural Gas Fired Combustion Turbine": False,
-            "Natural Gas Steam Turbine": False,
-            "Nuclear": True,
-            "Solar Photovoltaic": False,
-            "Hydroelectric Pumped Storage": False,
-            "Offshore Wind Turbine": False,
-            "OffShoreWind_Class1_Moderate_fixed_1": False,
-            "Landbased Wind Turbine": False,
-            "Small Hydroelectric": False,
-            "NaturalGas_CCCCSAvgCF_Conservative": False,
-            "NaturalGas_CCAvgCF_Moderate": False,
-            "NaturalGas_CTAvgCF_Moderate": False,
-            "Battery_*_Moderate": False,
-            "NaturalGas_CCS100_Moderate": False,
-            "heat_load_shifting": False,
-            "UtilityPV_Class1_Moderate": False,
-            "UtilityPV_Class1_Moderate_100": False,
-        }
-    if settings.get("energy_tech"):
-        energy_tech = settings["energy_tech"]
-    else:
-        energy_tech = {
-            "Onshore Wind Turbine": "Wind",
-            "Biomass": "Bio Solid",
-            "Conventional Hydroelectric": "Water",
-            "Conventional Steam Coal": "Coal",
-            "Natural Gas Fired Combined Cycle": "Naturalgas",
-            "Natural Gas Fired Combustion Turbine": "Naturalgas",
-            "Natural Gas Steam Turbine": "Naturalgas",
-            "Nuclear": "Uranium",
-            "Solar Photovoltaic": "Solar",
-            "Hydroelectric Pumped Storage": "Water",
-            "Offshore Wind Turbine": "Wind",
-            "OffShoreWind_Class1_Moderate_fixed_1": "Wind",
-            "Landbased Wind Turbine": "Wind",  ## add by RR because run into an erro of KeyError: 'LandbasedWind_Class1_Moderate_'
-            "LandbasedWind_Class1_Moderate": "Wind",  ## add by RR because run into an erro of KeyError: 'LandbasedWind_Class1_Moderate_'
-            "landbasedwind_class3_moderate": "Wind",  ## add by RR
-            "Small Hydroelectric": "Water",
-            "NaturalGas_CCCCSAvgCF_Conservative": "Naturalgas",
-            "NaturalGas_CCAvgCF_Moderate": "Naturalgas",
-            "NaturalGas_CTAvgCF_Moderate": "Naturalgas",
-            "Battery_*_Moderate": "Electricity",
-            "NaturalGas_CCS100_Moderate": "Naturalgas",
-            "heat_load_shifting": False,
-            "UtilityPV_Class1_Moderate": "Solar",
-            "UtilityPV_Class1_Moderate_100": "Solar",
-        }
-    if settings.get("forced_outage_tech"):
-        forced_outage_tech = settings["forced_outage_tech"]
-    else:
-        forced_outage_tech = {
-            "Onshore Wind Turbine": 0.0,
-            "Biomass": 0.04,
-            "Conventional Hydroelectric": 0.05,
-            "Conventional Steam Coal": 0.04,
-            # "Natural Gas Fired Combined Cycle": 0.4,
-            # "Natural Gas Fired Combustion Turbine": 0.4,
-            # "Natural Gas Steam Turbine": 0.4,
-            "Natural Gas Fired Combined Cycle": 0.04,
-            "Natural Gas Fired Combustion Turbine": 0.04,
-            "Natural Gas Steam Turbine": 0.04,
-            "Nuclear": 0.04,
-            "Solar Photovoltaic": 0.0,
-            "Hydroelectric Pumped Storage": 0.05,
-            "Offshore Wind Turbine": 0.05,
-            "OffShoreWind_Class1_Moderate_fixed_1": 0.05,
-            "Landbased Wind Turbine": 0.05,
-            "Small Hydroelectric": 0.05,
-            # "NaturalGas_CCCCSAvgCF_Conservative": 0.4,
-            # "NaturalGas_CCAvgCF_Moderate": 0.4,
-            # "NaturalGas_CTAvgCF_Moderate": 0.4,
-            # "NaturalGas_CCS100_Moderate": 0.4,
-            "NaturalGas_CCCCSAvgCF_Conservative": 0.04,
-            "NaturalGas_CCAvgCF_Moderate": 0.04,
-            "NaturalGas_CTAvgCF_Moderate": 0.04,
-            "NaturalGas_CCS100_Moderate": 0.04,
-            "Battery_*_Moderate": 0.02,
-            "heat_load_shifting": False,
-            "UtilityPV_Class1_Moderate": 0.0,
-            "UtilityPV_Class1_Moderate_100": 0.0,
-        }
-    if settings.get("sched_outage_tech"):
-        sched_outage_tech = settings["sched_outage_tech"]
-    else:
-        sched_outage_tech = {
-            "Onshore Wind Turbine": 0.0,
-            "Biomass": 0.06,
-            "Conventional Hydroelectric": 0.05,
-            "Conventional Steam Coal": 0.06,
-            # "Natural Gas Fired Combined Cycle": 0.6,
-            # "Natural Gas Fired Combustion Turbine": 0.6,
-            # "Natural Gas Steam Turbine": 0.6,
-            "Natural Gas Fired Combined Cycle": 0.06,
-            "Natural Gas Fired Combustion Turbine": 0.06,
-            "Natural Gas Steam Turbine": 0.06,
-            "Nuclear": 0.06,
-            "Solar Photovoltaic": 0.0,
-            "Hydroelectric Pumped Storage": 0.05,
-            "Offshore Wind Turbine": 0.01,
-            "OffShoreWind_Class1_Moderate_fixed_1": 0.01,
-            "Landbased Wind Turbine": 0.01,
-            "Small Hydroelectric": 0.05,
-            # "NaturalGas_CCCCSAvgCF_Conservative": 0.6,
-            # "NaturalGas_CCAvgCF_Moderate": 0.6,
-            # "NaturalGas_CTAvgCF_Moderate": 0.6,
-            # "NaturalGas_CCS100_Moderate": 0.6,
-            "NaturalGas_CCCCSAvgCF_Conservative": 0.06,
-            "NaturalGas_CCAvgCF_Moderate": 0.06,
-            "NaturalGas_CTAvgCF_Moderate": 0.06,
-            "NaturalGas_CCS100_Moderate": 0.06,
-            "Battery_*_Moderate": 0.01,
-            "heat_load_shifting": False,
-            "UtilityPV_Class1_Moderate": 0.0,
-            "UtilityPV_Class1_Moderate_100": 0.0,
-        }
+    # consolidate to one row per generator cluster (we assume data is the same
+    # for all rows)
+    gens = gens_by_model_year.drop_duplicates(subset="Resource")
 
-    gen_info = generation_projects_info(
-        complete_gens,
+    gen_info = gen_info_table(
+        gens,
         settings.get("transmission_investment_cost")["spur"]["capex_mw_mile"],
         settings.get("retirement_ages"),
     )
@@ -752,31 +566,6 @@ def gen_info_file(
     graph_tech_colors_table.insert(0, "map_name", "default")
     graph_tech_colors_table
 
-    gen_type_tech = {
-        "Onshore Wind Turbine": "Wind",
-        "Biomass": "Biomass",
-        "Conventional Hydroelectric": "Hydro",
-        "Conventional Steam Coal": "Coal",
-        "Natural Gas Fired Combined Cycle": "Naturalgas",
-        "Natural Gas Fired Combustion Turbine": "Naturalgas",
-        "Natural Gas Steam Turbine": "Naturalgas",
-        "Nuclear": "Nuclear",
-        "Solar Photovoltaic": "Solar",
-        "Hydroelectric Pumped Storage": "Hydro",
-        "Offshore Wind Turbine": "Wind",
-        "OffShoreWind_Class1_Moderate_fixed_1": "Wind",
-        "Landbased Wind Turbine": "Wind",  ## add by RR because run into an erro of KeyError: 'LandbasedWind_Class1_Moderate_'
-        "LandbasedWind_Class1_Moderate": "Wind",
-        "Small Hydroelectric": "Hydro",
-        "NaturalGas_CCCCSAvgCF_Conservative": "Naturalgas",
-        "NaturalGas_CCAvgCF_Moderate": "Naturalgas",
-        "NaturalGas_CTAvgCF_Moderate": "Naturalgas",
-        "Battery_*_Moderate": "Storage",
-        "NaturalGas_CCS100_Moderate": "Naturalgas",
-        "UtilityPV_Class1_Moderate": "Solar",
-        "UtilityPV_Class1_Moderate_100": "Solar",
-    }
-
     graph_tech_types_table = gen_info.drop_duplicates(subset="gen_tech")
     graph_tech_types_table["map_name"] = "default"
     graph_tech_types_table["energy_source"] = graph_tech_types_table[
@@ -786,6 +575,7 @@ def gen_info_file(
     cols = ["map_name", "gen_type", "gen_tech", "energy_source"]
     graph_tech_types_table = graph_tech_types_table[cols]
 
+    # Drop the heat rate that PowerGenome provides for many non-fuel-using generators
     fuels = fuel_prices["fuel"].unique()
     fuels = [fuel.capitalize() for fuel in fuels]
     non_fuel_table = graph_tech_types_table[
@@ -793,38 +583,16 @@ def gen_info_file(
     ]
     non_fuel_energy = list(set(non_fuel_table["energy_source"].to_list()))
     non_fuel_energy_table = pd.DataFrame(non_fuel_energy, columns=["energy_source"])
-
-    # non_fuel_energy_table = pd.DataFrame(non_fuel_energy, columns=['energy_source'])
-
     gen_info.loc[
         gen_info["gen_energy_source"].isin(non_fuel_energy),
         "gen_full_load_heat_rate",
-    ] = "."
+    ] = None
 
     graph_tech_colors_table.to_csv(out_folder / "graph_tech_colors.csv", index=False)
     graph_tech_types_table.to_csv(out_folder / "graph_tech_types.csv", index=False)
     non_fuel_energy_table.to_csv(
         out_folder / "non_fuel_energy_sources.csv", index=False
     )
-    # change the gen_capacity_limit_mw for those from gen_build_predetermined
-    gen_info_new = pd.merge(gen_info, gen_buildpre, how="left", on="GENERATION_PROJECT")
-    gen_info_new.loc[
-        gen_info_new["build_gen_predetermined"].notna(), "gen_capacity_limit_mw"
-    ] = gen_info_new[["gen_capacity_limit_mw", "build_gen_predetermined"]].max(axis=1)
-    gen_info = gen_info_new.drop(
-        ["build_year", "build_gen_predetermined", "build_gen_energy_predetermined"],
-        axis=1,
-    )
-    # remove the duplicated GENERATION_PROJECT from generation_projects_info .csv, and aggregate the "gen_capacity_limit_mw"
-    gen_info["total_capacity"] = gen_info.groupby(["GENERATION_PROJECT"])[
-        "gen_capacity_limit_mw"
-    ].transform("sum")
-    gen_info = gen_info.drop(
-        ["gen_capacity_limit_mw"],
-        axis=1,
-    )
-    gen_info.rename(columns={"total_capacity": "gen_capacity_limit_mw"}, inplace=True)
-    gen_info = gen_info.drop_duplicates(subset="GENERATION_PROJECT")
 
     # identify generators participating in ESR or minimum capacity programs,
     # then drop those columns
@@ -834,8 +602,10 @@ def gen_info_file(
     min_cap_gens = gen_info[["GENERATION_PROJECT"] + min_cap_col]
     gen_info = gen_info.drop(columns=ESR_col + min_cap_col)
 
-    # SWITCH 2.0.7 changes file name from  "generation_projects_info.csv" to "gen_info.csv"
-    gen_info.to_csv(out_folder / "gen_info.csv", index=False)
+    gen_info.to_csv(out_folder / "gen_info.csv", index=False, na_rep=".")
+
+    ################
+    # ESR and min_cap programs
 
     # create esr_generators.csv: list of generators participating in ESR (RPS/CES) programs
     ESR_generators_long = pd.melt(
@@ -864,211 +634,214 @@ def gen_info_file(
     ###############################################################
 
 
-def pg_generator_params(gc, first_year_settings):
-    all_gen = gc.create_all_generators()
-    all_gen = add_misc_gen_values(all_gen, first_year_settings)
-    all_gen = hydro_energy_to_power(
-        all_gen,
-        first_year_settings.get("hydro_factor"),
-        first_year_settings.get("regional_hydro_factor", {}),
-    )
-    all_gen["Resource"] = all_gen["Resource"].str.rstrip("_")
-    all_gen["technology"] = all_gen["technology"].str.rstrip("_")
-    # all_gen["plant_id_eia"] = all_gen["plant_id_eia"].astype("Int64")
-    # existing_gen = all_gen.loc[
-    #     all_gen["plant_id_eia"].notna(), :
-    # ]  # gc.create_region_technology_clusters()
-
-    ##### add for greenfield scenario, edit at 08/07/2023
-    if "Existing_Cap_MW" in all_gen.columns:
-        print("Existing_Cap_MW column exists")
-    else:
-        all_gen["Existing_Cap_MW"] = 0
-    return all_gen
-
-
-def existing_gen_info(gc, pudl_engine, first_year_settings, all_gen):
-    existing_gen = all_gen.loc[all_gen["Existing_Cap_MW"] > 0, :]
-    data_years = gc.settings.get("eia_data_years", [])
-    if not isinstance(data_years, list):
-        data_years = [data_years]
-    data_years = [str(y) for y in data_years]
-    s = f"""
-        SELECT
-            "plant_id_eia",
-            "generator_id",
-            "operational_status",
-            "retirement_date",
-            "planned_retirement_date",
-            "current_planned_operating_date"
-        FROM generators_eia860
-        WHERE strftime('%Y',report_date) in ({','.join('?'*len(data_years))})
+def gen_tables(gc, pudl_engine, scen_settings_dict):
     """
-    # generators_eia860 = pd.read_sql_table("generators_eia860", pudl_engine)
-    generators_eia860 = pd.read_sql_query(
-        s,
-        pudl_engine,
-        params=data_years,
-        parse_dates=[
-            "planned_retirement_date",
-            "retirement_date",
-            "current_planned_operating_date",
-        ],
-    )
+    Return dataframes showing all generator clusters that can be operated in
+    each model_year and that can be built in each build_year. gens_by_model_year
+    has one row for every model_year when the generator or unit can be operated.
+    gens_by_build_year has one row for every build_year when the generators can
+    be built or were built.
 
-    generators_entity_eia = pd.read_sql_table("generators_entity_eia", pudl_engine)
-    # create copies of PUDL tables and filter to relevant columns
-    pudl_gen = generators_eia860.copy()
-    pudl_gen = pudl_gen[
-        [
-            "plant_id_eia",
-            "generator_id",
-            "operational_status",
-            "retirement_date",
-            "planned_retirement_date",
-            "current_planned_operating_date",
-        ]
-    ]  #'utility_id_eia',
+    These dataframes each show both new and existing generators. They contain
+    all the data from gc.create_all_generators() (and gc.units_model after
+    running this) plus some extra data.
 
-    pudl_gen_entity = generators_entity_eia.copy()
-    pudl_gen_entity = pudl_gen_entity[
-        ["plant_id_eia", "generator_id", "operating_date"]
-    ]
+    The "existing" column identifies generators that have a scheduled
+    construction plan in the past or near future; for these, capacity_mw and
+    possibly capacity_mwh will also have values. The "new_build" column
+    identifies generators that can be built during the study period.
 
-    eia_Gen = gc.operating_860m
-    eia_Gen = eia_Gen[
-        [
-            "utility_id_eia",
-            "utility_name",
-            "plant_id_eia",
-            "plant_name",
-            "generator_id",
-            "operating_year",
-            "planned_retirement_year",
-        ]
-    ]
-    eia_Gen = eia_Gen.loc[eia_Gen["plant_id_eia"].notna(), :]
+    This is the main place where generator data is read from PowerGenome, so it
+    is also the best place to filter or adapt the data as needed before use
+    elsewhere.
 
-    # create identifier to connect to powergenome data
-    eia_Gen["plant_gen_id"] = (
-        eia_Gen["plant_id_eia"].astype(str) + "_" + eia_Gen["generator_id"]
-    )
-
-    eia_Gen_prop = gc.proposed_gens.reset_index()
-    eia_Gen_prop = eia_Gen_prop[
-        [
-            # "utility_id_eia",
-            # "utility_name",
-            "plant_id_eia",
-            # "plant_name",
-            "generator_id",
-            "planned_operating_year",
-        ]
-    ]
-    eia_Gen_prop = eia_Gen_prop.loc[eia_Gen_prop["plant_id_eia"].notna(), :]
-    eia_Gen_prop["plant_gen_id"] = (
-        eia_Gen_prop["plant_id_eia"].astype(str) + "_" + eia_Gen_prop["generator_id"]
-    )
-
-    # create copies of potential_build_yr (powergenome)
-    pg_build = gc.units_model.copy()
-    if first_year_settings.get("derate_capacity"):
-        pg_build = derate_by_capacity_factor(
-            derate_techs=first_year_settings.get("derate_techs", []),
-            unit_df=pg_build,
-            existing_gen_df=existing_gen,
-            cap_col=first_year_settings.get("capacity_col", "capacity_mw"),
-        )
-    pg_build = pg_build[
-        [
-            "plant_id_eia",
-            "generator_id",
-            "unit_id_pg",
-            "planned_operating_year",
-            "planned_retirement_date",
-            "operating_date",
-            "operating_year",
-            "retirement_year",
-            first_year_settings.get("capacity_col", "capacity_mw"),
-            "capacity_mwh",
-            "technology",
-        ]
-    ]
-
-    retirement_ages = first_year_settings.get("retirement_ages")
-
-    row_list = []
-    for row in all_gen.itertuples():
-        if isinstance(row.plant_id_eia, list):
-            for plant_id, unit_id in zip(row.plant_id_eia, row.unit_id_pg):
-                new_row = row._replace(plant_id_eia=plant_id, unit_id_pg=unit_id)
-                row_list.append(new_row)
-        else:
-            row_list.append(row)
-    all_gen_units = pd.DataFrame(row_list)
-    all_gen_units["plant_id_eia"] = all_gen_units["plant_id_eia"].astype("Int64")
-
-    # add in the plant+generator ids to pg_build and pudl tables (plant_id_eia + generator_id)
-    pudl_gen = plant_gen_id(pudl_gen)
-    pudl_gen_entity = plant_gen_id(pudl_gen_entity)
-    pg_build = plant_gen_id(pg_build)
-
-    # add in the plant+pudl id to the all_gen and pg_build tables (plant_id_eia + unit_pudl_id)
-    pg_build = plant_pudl_id(pg_build)
-    all_gen_units = plant_pudl_id(all_gen_units)
-
-    # formerly gen_buildpre = gen_build_predetermined(),
-    # but starting Feb. 2024, we carry cost info in this file too,
-    # so it is not just for gen_build_predetermined.
-    existing_gen_units = existing_gens_by_vintage(
-        all_gen_units,
-        pudl_gen,
-        pudl_gen_entity,
-        pg_build,
-        {},  # manual_build_yr,
-        eia_Gen,
-        eia_Gen_prop,
-        {},  # plant_gen_manual,
-        {},  # plant_gen_manual_proposed,
-        {},  # plant_gen_manual_retired,
-        retirement_ages,
-        first_year_settings.get("capacity_col", "capacity_mw"),
-    )
-
-    return existing_gen, all_gen_units, existing_gen_units
-
-
-def new_gen_info(gc, scen_settings_dict):
-    new_gen_list = []
+    Note: this changes all the generator-related attributes of gc.
+    """
+    # we save and restore gc.settings, but calling gc.create_all_generators()
+    # has unknown side effects on gc, including updating all the
+    # generator-related attributes.
+    orig_gc_settings = gc.settings
+    gen_dfs = []
+    unit_dfs = []
+    """
+    # for testing:
+    year_settings = first_value(scen_settings_dict)
+    """
     for year_settings in scen_settings_dict.values():
-        # define new generators (period_ng)
-        orig_gc_settings = gc.settings
+
+        """
+        # for testing:
+        gen_df = gc.all_resources.copy()
+        """
         gc.settings = year_settings
-        period_ng = gc.create_new_generators()
-        gc.settings = orig_gc_settings
+        gen_df = gc.create_all_generators().copy()
 
-        period_ng["Resource"] = period_ng["Resource"].str.rstrip("_")
-        period_ng["technology"] = period_ng["technology"].str.rstrip("_")
-        period_ng["build_year"] = year_settings["model_year"]
-        period_ng["GENERATION_PROJECT"] = period_ng["Resource"]
-        if year_settings.get("co2_pipeline_filters") and year_settings.get(
-            "co2_pipeline_cost_fn"
-        ):
-            period_ng = merge_co2_pipeline_costs(
-                df=period_ng,
-                co2_data_path=year_settings["input_folder"]
-                / year_settings.get("co2_pipeline_cost_fn"),
-                co2_pipeline_filters=year_settings["co2_pipeline_filters"],
-                region_aggregations=year_settings.get("region_aggregations"),
-                fuel_emission_factors=year_settings["fuel_emission_factors"],
-                target_usd_year=year_settings.get("target_usd_year"),
+        # identify existing and new-build for reference later
+        # (these could overlap in principle, but don't as of Feb. 2024)
+        if gc.current_gens:
+            gen_df["existing"] = gen_df["Resource"].isin(
+                gc.existing_resources["Resource"]
             )
+        else:  # must all be new
+            gen_df["existing"] = False
+        gen_df["new_build"] = gen_df["Resource"].isin(gc.new_resources["Resource"])
 
-        new_gen_list.append(period_ng)
+        # clean up some resource and technology labels
+        gen_df["Resource"] = gen_df["Resource"].str.rstrip("_")
+        gen_df["technology"] = gen_df["technology"].str.rstrip("_")
 
-    newgens = pd.concat(new_gen_list, ignore_index=True)
-    newgens = add_co2_costs_to_o_m(newgens)
-    return new_gen_list, newgens
+        # If running an operation model, only consider existing projects. This
+        # is rarely used; normally we setup operation models based on solved
+        # capacity-planning models, but if specified, we drop the option for
+        # new gens.
+        if year_settings.get("operation_model"):
+            gen_df = gen_df.loc[gen_df["existing"], :]
+            # make sure new_build is turned off for any that overlap
+            gen_df = gen_df["new_build"] = False
+
+        # in greenfield scenarios, Existing_Cap_MW might be omitted
+        if "Existing_Cap_MW" not in gen_df.columns:
+            gen_df["Existing_Cap_MW"] = float("nan")
+
+        # identify storage gens for the next few steps
+        storage_gens = gen_df["STOR"].astype(bool)
+
+        # Use $0 as capex and fixed O&M for existing plants (our settings don't
+        # have all of these for existing plants as of Mar 2024)
+        for c in ["capex_mw", "Fixed_OM_Cost_per_MWyr"]:
+            gen_df[c] = gen_df[c].fillna(0)
+        for c in ["capex_mwh", "Fixed_OM_Cost_per_MWhyr"]:
+            gen_df.loc[storage_gens, c] = gen_df.loc[storage_gens, c].fillna(0)
+
+        # Use 1 as regional_cost_multiplier if not specified (i.e., for existing gens)
+        gen_df["regional_cost_multiplier"] = gen_df["regional_cost_multiplier"].fillna(
+            1
+        )
+
+        # Remove storage-related params for non-storage gens (we get a lot of
+        # these as of Mar 2024)
+        gen_df.loc[
+            ~storage_gens,
+            ["Existing_Cap_MWh", "capex_mwh", "Fixed_OM_Cost_per_MWhyr"],
+        ] = None
+
+        # record which model year these generators could be used in
+        gen_df["model_year"] = year_settings["model_year"]
+
+        # gather some extra data
+        gen_df = add_misc_gen_values(gen_df, year_settings)
+        gen_df = hydro_energy_to_power(
+            gen_df,
+            year_settings.get("hydro_factor"),
+            year_settings.get("regional_hydro_factor", {}),
+        )
+
+        gen_df = add_co2_costs_to_o_m(gen_df)
+
+        gen_dfs.append(gen_df)
+
+        # find build_year, capacity_mw and capacity_mwh for existing generating
+        # units online in this model_year for each gen cluster
+        existing_gens = gen_df.query("existing & plant_id_eia.notna()")
+        eia_unit_info = eia_build_info(gc, pudl_engine, existing_gens)
+        unit_df = gen_df.merge(eia_unit_info, on="Resource", how="left")
+
+        unit_dfs.append(unit_df)
+
+    gc.settings = orig_gc_settings
+
+    gens_by_model_year = pd.concat(gen_dfs, ignore_index=True)
+    units_by_model_year = pd.concat(unit_dfs, ignore_index=True)
+
+    # Update generic generators (distributed generation and a few others in the
+    # "existing" list but without EIA ids, so no build_year info yet). This is
+    # done after combining across model years, so we can (potentially) infer the
+    # amount built in each year from the change in capacity between model years.
+    units_by_model_year = add_generic_gen_build_info(
+        units_by_model_year, scen_settings_dict
+    )
+
+    assert (
+        units_by_model_year.query("existing")["build_year"].notna().all()
+    ), "Some existing generating units have no build_year assigned."
+
+    # create by_build_year tables from these
+
+    # for existing gens, merge the repeated records from different model years
+    # and then aggregate by vintage Note: we assume generator cluster properties
+    # are unchanged across model years; if not, the next few chunks would need
+    # to average them for Switch instead of just dropping duplicates and merging
+    # back to the first gen row)
+    unit_info = units_by_model_year.drop_duplicates(
+        subset=["Resource", "plant_gen_id", "build_year"]
+    )
+
+    # aggregate by build_year
+    # this could in theory be done with groupby()[columns].sum(), but then
+    # pandas 1.4.4 sometimes drops capacity_mw for this dataframe (seems to happen
+    # with columns where one's name is a shorter version of the other)
+    build_year_info = unit_info.groupby(["Resource", "build_year"], as_index=False).agg(
+        {"capacity_mw": "sum", "capacity_mwh": "sum"}
+    )
+
+    # Existing gen clusters are duplicated across model years, so we first
+    # consolidate to one row per resource, then replicate data for each
+    # resource/build_year combo
+    existing_gens = gens_by_model_year.query("existing").drop_duplicates(
+        subset="Resource", keep="first"
+    )
+    # turn off "new_build" flag if set; those will be duplicated in
+    # new_gens_by_build_year
+    existing_gens["new_build"] = False
+    existing_gens_by_build_year = existing_gens.merge(
+        build_year_info, on="Resource", how="left"
+    )
+
+    # Create dataframe showing when the new generators can be built and
+    # consolidating by build year instead of model year. This is simple, since
+    # for new gens the build_year is the same as the model_year (and that's the
+    # year for which costs are shown)
+    new_gens_by_build_year = gens_by_model_year.query("new_build")
+    new_gens_by_build_year["build_year"] = new_gens_by_build_year["model_year"]
+    # turn off "existing" flag if set; those are duplicated in
+    # existing_gens_by_build_year
+    new_gens_by_build_year["existing"] = False
+
+    gens_by_build_year = pd.concat(
+        [existing_gens_by_build_year, new_gens_by_build_year], ignore_index=True
+    )
+    # Remove storage-related params (always 0?) for non-storage gens
+    # (could be done in the loop above, and in theory the sums would come out
+    # as NaNs, but in practice they sometimes come out as 0 instead)
+    gens_by_build_year.loc[
+        gens_by_build_year["STOR"] == 0,
+        [
+            "Existing_Cap_MWh",
+            "capex_mwh",
+            "Fixed_OM_Cost_per_MWhyr",
+            "capacity_mwh",
+        ],
+    ] = None
+
+    assert (
+        gens_by_build_year["new_build"] & gens_by_build_year["Existing_Cap_MW"].notna()
+    ).sum() == 0, "Some new-build generators have Existing_Cap_MW assigned."
+
+    # This might be a better treatment of operation models.
+    # # if running an operation model, convert new build to existing with 0
+    # # capacity, to prevent the model from making any construction choices
+    # if first_value(scen_settings_dict).get("operation_model"):
+    #     new = gens_by_build_year["new_build"]
+    #     gens_by_build_year.loc[new, "existing"] = True
+    #     gens_by_build_year.loc[new, ["Existing_Cap_MW", "Existing_Cap_MWh"]] = 0
+    #     gens_by_build_year.loc[new, "new_build"] = False
+
+    # TODO: possibly reimplement code from
+    # https://github.com/switch-model/Switch-USA-PG/blob/786c68c3c5ba2d81b196362070794d4f6365927f/pg_to_switch.py#L227
+    # to avoid problems in post-solve due to predetermined generators after the
+    # start of the model
+
+    return gens_by_model_year, gens_by_build_year
 
 
 def other_tables(
@@ -1582,6 +1355,16 @@ def year_name(years):
     # return "_".join(str(y) for y in yrs)
 
 
+"""
+# settings for testing
+settings_file = "MIP_results_comparison/case_settings/26-zone/settings"
+results_folder = "/tmp/pg_test"
+case_id = ["base_short"]
+year = [2030] # [2030, 2040, 2050]
+myopic = False
+"""
+
+
 def main(
     settings_file: str,
     results_folder: str,
@@ -1714,6 +1497,10 @@ def main(
     hydro_var["MIS_D_MS"] = hydro_var["MIS_AR"].values
     hydro_variability_new = hydro_var.copy()
 
+    """
+    # values for testing
+    c, scen_settings_dict = to_run[0]
+    """
     # Run through the different cases and save files in a new folder for each.
     for c, scen_settings_dict in to_run:
         # c is case_id for this case
