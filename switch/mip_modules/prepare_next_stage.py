@@ -50,7 +50,7 @@ def post_solve(m, outdir):
         )
     if year_name != in_path.parts[-2]:
         raise ValueError(
-            "Year '{in_path.parts[-2]}' in --inputs-dir doesn't match '{year_name}' in --outputs-dir."
+            f"Year '{in_path.parts[-2]}' in --inputs-dir doesn't match '{year_name}' in --outputs-dir."
         )
 
     year = int(year_name)
@@ -112,12 +112,12 @@ def post_solve(m, outdir):
         """
         next_df = read_csv(next_in_path, filename)
         # merge, dropping any 100% duplicate rows
-        df = pd.concat(df, next_df).drop_duplicates()
+        df = pd.concat([df, next_df]).drop_duplicates()
         # The first two columns should be ["GENERATION_PROJECT", "BUILD_YEAR"]
         # but spelling/capitalization may differ.
         dup_cols = df.columns[:2]
         # report any duplicates (hopefully none)
-        dups = df.duplicated(subset=dup_cols, keep=False)
+        dups = df.loc[df.duplicated(subset=dup_cols, keep=False), :]
         if not dups.empty:
             df = df.drop_duplicates(subset=dup_cols, keep="first")
             file_base, file_ext = os.path.splitext(filename)
