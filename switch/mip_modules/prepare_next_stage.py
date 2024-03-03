@@ -104,6 +104,33 @@ def post_solve(m, outdir):
         # path.parent.mkdir(parents=True, exist_ok=True)
         df.to_csv(path, index=False, na_rep=".")
 
+    def merge_build_data(df, filename):
+        """
+        Merge construction or cost data in dataframe df with equivalent data
+        from next model, dropping duplicates (same project and period) and
+        reporting any cases where the duplicates have different data.
+        """
+        next_df = read_csv(next_in_path, filename)
+        # merge, dropping any 100% duplicate rows
+        df = pd.concat(df, next_df).drop_duplicates()
+        # The first two columns should be ["GENERATION_PROJECT", "BUILD_YEAR"]
+        # but spelling/capitalization may differ.
+        dup_cols = df.columns[:2]
+        # report any duplicates (hopefully none)
+        dups = df.duplicated(subset=dup_cols, keep=False)
+        if not dups.empty:
+            df = df.drop_duplicates(subset=dup_cols, keep="first")
+            file_base, file_ext = os.path.splitext(filename)
+            dup_file = chained(next_in_path, file_base + ".dup" + file_ext)
+            to_csv(dups, dup_file)
+            print(
+                "\nWARNING: Ignoring duplicate predetermined projects with different data:"
+            )
+            print(dups)
+            print(f"(Saved in {dup_file}.)\n")
+
+        return df
+
     # use actual construction from current model (includes both predetermined and
     # optimized resources) as the predetermined construction for the next stage.
     build_mw = read_csv(out_path, "BuildGen.csv").rename(
@@ -130,29 +157,34 @@ def post_solve(m, outdir):
     # inconsistencies and this is the only way to resolve them)
     next_gen_info = read_csv(next_in_path, "gen_info.csv")
     predet = predet.merge(next_gen_info["GENERATION_PROJECT"])
+
+    # merge with any from the next model, to pickup predetermined construction
+    # after this part of the study
+    predet = merge_build_data(predet, "gen_build_predetermined.csv")
     to_csv(predet, chained(next_in_path, "gen_build_predetermined.csv"))
 
     # use this model's costs for everything that was built and next model's
     # costs for anything in the next period (or later, if we eventually chain
     # multi-period models). This maintains consistency with the new
     # gen_build_predetermined.
-    costs_predet = read_csv(possibly_chained(in_path, "gen_build_costs.csv"))
-    # filter to only cover predetermined builds
-    costs_predet = costs_predet.merge(predet[["GENERATION_PROJECT", "build_year"]])
-    # get costs for future construction
-    costs_new = read_csv(next_in_path, "gen_build_costs.csv")
-    # filter to only cover future builds
-    costs_new = costs_new.loc[costs_new["build_year"] > year, :]
-    costs = pd.concat([costs_predet, costs_new])
+    costs = read_csv(possibly_chained(in_path, "gen_build_costs.csv"))
+    # drop any that don't appear in the next model
+    costs = predet.merge(next_gen_info["GENERATION_PROJECT"])
+    # merge cost data from this model with cost data from the next model
+    # (this will use data from this model for projects/build_years from this
+    # model and data from the next model for additional projects/build_years,
+    # and give a warning if there are different data for any overlapping ones)
+    costs = merge_build_data(costs, "gen_build_costs.csv")
     to_csv(costs, chained(next_in_path, "gen_build_costs.csv"))
 
     # remove caps on any non-new-build generators to avoid infeasibility due
     # to inconsistencies
-    next_gen_info.loc[
-        ~next_gen_info["GENERATION_PROJECT"].isin(costs_new["GENERATION_PROJECT"]),
-        "gen_capacity_limit_mw",
-    ] = float("nan")
-    to_csv(next_gen_info, chained(next_in_path, "gen_info.csv"))
+    # (no longer needed, because we no longer have these caps in the first place)
+    # next_gen_info.loc[
+    #     ~next_gen_info["GENERATION_PROJECT"].isin(costs_new["GENERATION_PROJECT"]),
+    #     "gen_capacity_limit_mw",
+    # ] = float("nan")
+    # to_csv(next_gen_info, chained(next_in_path, "gen_info.csv"))
 
     # combine starting transmission for this case with transmission expansion
     trans = read_csv(possibly_chained(in_path, "transmission_lines.csv"))
@@ -170,6 +202,10 @@ def post_solve(m, outdir):
 
 
 class Test:
+    """
+    generic object that can be assigned any attributes needed
+    """
+
     pass
 
 
