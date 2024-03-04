@@ -7,7 +7,7 @@ todo:
 - add retire_early and retire_late options to gen_build_suspend and set that in options.txt; will also need to add the can_suspend flags below, so we can use this
 module full-time
 
-- add hydrogen as a fuel
++ add hydrogen as a fuel
 
 + add gen_can_suspend and gen_can_retire_early settings (both default to 0) to gen_info.csv for use by gen_build_suspend (if gen_can_retire and not gen_can_suspend, require later suspensions >= previous suspensions for each gen/vintage)
 

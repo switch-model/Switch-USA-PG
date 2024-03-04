@@ -52,7 +52,7 @@ def switch_fuel_cost_table(
 
     ref_df = fuel_prices.copy()
     ref_df = ref_df.loc[
-        fuel_prices["scenario"].isin(scenario)
+        ref_df["scenario"].isin(scenario)
     ]  # use reference scenario for now
     ref_df = ref_df[ref_df["year"].isin(year_list)]
     ref_df = ref_df.drop(["full_fuel_name", "scenario"], axis=1)
@@ -63,7 +63,9 @@ def switch_fuel_cost_table(
     data = list()
     for region in aeo_fuel_region_map.keys():
         df = ref_df.copy()
-        df = df[df["region"] == region]
+        # lookup all fuels available in this region or with no region specified
+        # (generally user-defined fuels added earlier)
+        df = df[df["region"].isin({region, ""})]
         for ipm in aeo_fuel_region_map[region]:
             ipm_region = ipm
             df["load_zone"] = ipm_region
