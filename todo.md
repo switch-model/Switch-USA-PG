@@ -18,7 +18,7 @@ module full-time
 
 + resolve cases where gen_build_predetermined for 2040 has capacity that wasn't in the 2030 file (e.g., with date of construction in 2025) or has less capacity than the 2030 file (e.g., BASN_natural_gas_fired_combined_cycle_1,1994 is 141 Mw in 2030 and 53 MW in 2040). Could the second part be something about clustering plants that are already scheduled to retire? Do we not use a uniform retirement age for each cluster?
 + get fixed O&M to show up for existing plants so there is money to save by retiring them
-- update transmission scenario definitions to all branch off base_short instead of using separate dirs for most
++ update transmission scenario definitions to all branch off base_short instead of using separate dirs for most
 - add code to pg_to_switch to auto-generate scenarios.txt (for all possible cases), depending on whether it is a pre-chain year, post-chain year, which transmission and co2 costs are used, whether retirement or ramp limits are enabled, etc.
 - make dirs a more readable color in ls on hpc
 - setup .slurm scripts to run the scenarios as array jobs with different jobs for different years and dependencies between them (can we have dependencies between tasks, so 2040 case 1 depends on 2030 case 1?)
