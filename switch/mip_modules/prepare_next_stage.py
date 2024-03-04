@@ -169,7 +169,7 @@ def post_solve(m, outdir):
     # gen_build_predetermined.
     costs = read_csv(possibly_chained(in_path, "gen_build_costs.csv"))
     # drop any that don't appear in the next model
-    costs = predet.merge(next_gen_info["GENERATION_PROJECT"])
+    costs = costs.merge(next_gen_info["GENERATION_PROJECT"])
     # merge cost data from this model with cost data from the next model
     # (this will use data from this model for projects/build_years from this
     # model and data from the next model for additional projects/build_years,
