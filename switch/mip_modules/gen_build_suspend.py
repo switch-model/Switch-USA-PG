@@ -226,6 +226,10 @@ def define_components(mod):
     mod.gen_forced_outage_rate = Param(
         mod.GENERATION_PROJECTS, within=PercentFraction, default=0
     )
+    mod.gen_can_suspend = Param(mod.GENERATION_PROJECTS, within=Boolean, default=False)
+    mod.gen_can_retire_early = Param(
+        mod.GENERATION_PROJECTS, within=Boolean, default=False
+    )
     mod.min_data_check(
         "GENERATION_PROJECTS",
         "gen_tech",
@@ -504,6 +508,34 @@ def define_components(mod):
         <= m.BuildGen[g, bld_yr],
     )
 
+    # only suspend if allowed
+    mod.Only_Suspend_Built_Capacity = Constraint(
+        mod.GEN_BLD_SUSPEND_YRS,
+        rule=lambda m, g, bld_yr, sus_yr: (
+            Constraint.Skip
+            if m.gen_can_suspend[g] or m.gen_can_retire_early[g]
+            else (m.SuspendGen[g, bld_yr, sus_yr] == 0)
+        ),
+    )
+
+    # Force permanent retirement (suspension must continue through all later
+    # years), if early retirement is allowed but suspension is not
+    mod.Only_Suspend_Built_Capacity = Constraint(
+        mod.GEN_BLD_SUSPEND_YRS,
+        rule=lambda m, g, bld_yr, sus_yr: (
+            (
+                m.SuspendGen[g, bld_yr, sus_yr]
+                <= m.SuspendGen[g, bld_yr, m.PERIOS.prev(sus_yr)]
+            )
+            if (
+                m.gen_can_retire_early[g]
+                and not m.gen_can_suspend[g]
+                and sus_yr != m.PERIODS.first()
+            )
+            else Constraint.Skip
+        ),
+    )
+
     mod.GenCapacity = Expression(
         mod.GENERATION_PROJECTS,
         mod.PERIODS,
@@ -674,6 +706,8 @@ def load_inputs(mod, switch_data, inputs_dir):
             mod.gen_connect_cost_per_mw,
             mod.gen_is_cogen,
             mod.gen_is_distributed,
+            mod.gen_can_suspend,
+            mod.gen_can_retire_early,
         ),
     )
     # Construct sets of capacity-limited, ccs-capable and unit-size-specified

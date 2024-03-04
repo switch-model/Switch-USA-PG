@@ -604,6 +604,14 @@ def gen_info_file(
 
     gen_info.to_csv(out_folder / "gen_info.csv", index=False, na_rep=".")
 
+    # make alternative versions with early retirement options
+    gen_info.assign(gen_can_suspend=1).to_csv(
+        out_folder / "gen_info.can_suspend.csv", index=False, na_rep="."
+    )
+    gen_info.assign(gen_can_retire_early=1).to_csv(
+        out_folder / "gen_info.can_retire_early.csv", index=False, na_rep="."
+    )
+
     ################
     # ESR and min_cap programs
 
