@@ -15,7 +15,7 @@
 #SBATCH --job-name=demand_scenarios
 #SBATCH --partition=shared
 #SBATCH --time=3-00:00:00
-#SBATCH --array=1-13
+#SBATCH --array=1-4
 
 module load lang/Anaconda3
 # conda activate requires `conda init bash` or similar, which may not work here

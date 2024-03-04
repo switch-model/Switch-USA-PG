@@ -509,7 +509,7 @@ def define_components(mod):
     )
 
     # only suspend if allowed
-    mod.Only_Suspend_Built_Capacity = Constraint(
+    mod.Only_Suspend_Suspendable_Gens = Constraint(
         mod.GEN_BLD_SUSPEND_YRS,
         rule=lambda m, g, bld_yr, sus_yr: (
             Constraint.Skip
@@ -520,7 +520,7 @@ def define_components(mod):
 
     # Force permanent retirement (suspension must continue through all later
     # years), if early retirement is allowed but suspension is not
-    mod.Only_Suspend_Built_Capacity = Constraint(
+    mod.Suspend_Retired_Gens = Constraint(
         mod.GEN_BLD_SUSPEND_YRS,
         rule=lambda m, g, bld_yr, sus_yr: (
             (
