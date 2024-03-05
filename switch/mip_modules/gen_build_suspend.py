@@ -29,6 +29,22 @@ dependencies = (
 )
 
 
+def define_arguments(argparser):
+    argparser.add_argument(
+        "--retire",
+        dest="retire_time",
+        default="late",
+        choices=["early", "mid", "late"],
+        help=(
+            "Retire generation projects at the start of the period when they "
+            "reach end-of-life ('early') (i.e., only run if they survive to the "
+            "end of the period), or retire them if they survive past the middle "
+            "of the period ('mid'), or extend operation to the end of the period "
+            "when they reach end-of-life ('late'). Late is the default."
+        ),
+    )
+
+
 def define_components(mod):
     """
 
@@ -396,14 +412,31 @@ def define_components(mod):
 
     def gen_build_can_operate_in_period(m, g, build_year, period):
         if build_year in m.PERIODS:
+            # always build at start of period
             online = m.period_start[build_year]
         else:
             online = build_year
         retirement = online + m.gen_max_age[g]
-        return online <= m.period_start[period] < retirement
-        # This is probably more correct, but is a different behavior
-        # mid_period = m.period_start[period] + 0.5 * m.period_length_years[period]
-        # return online <= m.period_start[period] and mid_period <= retirement
+        if build_year == period:
+            # always allow operation during the period it is built, even
+            # if asset life isn't enough to cover the period
+            can_run = True
+        elif m.options.retire_time == "late":
+            # default:
+            # operate if it survives across the start of the period
+            # (but not if it retires exactly at the start, i.e., in the
+            # prior period)
+            can_run = online <= m.period_start[period] < retirement
+        elif m.options.retire_time == "mid":
+            mid_period = m.period_start[period] + 0.5 * m.period_length_years[period]
+            can_run = online <= mid_period <= retirement
+        else:
+            # user-chose retire-at-start-of-period option
+            # operate if it survives across the end of the period
+            # (but not if it's built right at the end, i.e., in the
+            # next period)
+            can_run = online < m.period_end[period] <= retirement
+        return can_run
 
     # The set of periods when a project built in a certain year will be online
     mod.PERIODS_FOR_GEN_BLD_YR = Set(
