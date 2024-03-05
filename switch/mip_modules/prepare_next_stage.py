@@ -168,6 +168,15 @@ def post_solve(m, outdir):
     # multi-period models). This maintains consistency with the new
     # gen_build_predetermined.
     costs = read_csv(possibly_chained(in_path, "gen_build_costs.csv"))
+    # drop any that don't match up with capacity being carried forward
+    # (e.g., predetermined capacity == 0 or BuildGen == 0)
+    # (match using first two cols, however they're capitalized)
+    costs = costs.merge(
+        predet.iloc[:, :2],
+        left_on=costs.columns[:2],
+        right_on=predet.columns[:2],
+        how="inner",
+    )
     # drop any that don't appear in the next model
     costs = costs.merge(next_gen_info["GENERATION_PROJECT"])
     # merge cost data from this model with cost data from the next model
