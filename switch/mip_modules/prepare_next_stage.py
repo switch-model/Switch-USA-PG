@@ -111,7 +111,9 @@ def post_solve(m, outdir):
         reporting any cases where the duplicates have different data.
         """
         next_df = read_csv(next_in_path, filename)
-        # merge, dropping any 100% duplicate rows
+        # make sure column names are consistent
+        next_df = next_df.rename(columns=dict(zip(next_df.columns[:2], df.columns[:2])))
+        # append, dropping any 100% duplicate rows
         df = pd.concat([df, next_df]).drop_duplicates()
         # The first two columns should be ["GENERATION_PROJECT", "BUILD_YEAR"]
         # but spelling/capitalization may differ.
@@ -172,11 +174,11 @@ def post_solve(m, outdir):
     # (e.g., predetermined capacity == 0 or BuildGen == 0)
     # (match using first two cols, however they're capitalized)
     costs = costs.merge(
-        predet.iloc[:, :2],
-        left_on=costs.columns[:2],
-        right_on=predet.columns[:2],
+        predet,
+        left_on=costs.columns[:2].to_list(),
+        right_on=predet.columns[:2].to_list(),
         how="inner",
-    )
+    )[costs.columns]
     # drop any that don't appear in the next model
     costs = costs.merge(next_gen_info["GENERATION_PROJECT"])
     # merge cost data from this model with cost data from the next model
