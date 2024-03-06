@@ -83,11 +83,19 @@ def input_file(case, year, file):
     """
     # This is tricky because the inputs dir may not have the same name as the
     # outputs dir (several models may use the same inputs with different
-    # settings for each case)
+    # settings for each case) and the inputs file could be an alternative
+    # version for this scenario and/or chained from the previous period
+    # (for myopic models)
     with open(output_file(case, year, "model_config.json"), "r") as f:
         case_settings = json.load(f)
 
+    # lookup correct inputs_dir
     in_dir = case_settings["options"]["inputs_dir"]
+    # apply input_alias if specified
+    alias_list = case_settings["options"].get("input_aliases", [])
+    aliases = dict(x.split("=") for x in alias_list)
+    file = aliases.get(file, file)
+
     return os.path.join(root_folder, in_dir, file)
 
 
