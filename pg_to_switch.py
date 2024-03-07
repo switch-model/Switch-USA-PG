@@ -18,12 +18,13 @@ from typing_extensions import Annotated
 
 import pandas as pd
 from powergenome.fuels import fuel_cost_table
-from powergenome.generators import GeneratorClusters
+from powergenome.generators import GeneratorClusters, create_plant_gen_id
 from powergenome.util import (
     build_scenario_settings,
     init_pudl_connection,
     load_settings,
     check_settings,
+    snake_case_col,
 )
 
 from powergenome.time_reduction import kmeans_time_clustering
@@ -51,7 +52,6 @@ from conversion_functions import (
     switch_fuel_cost_table,
     switch_fuels,
     add_generic_gen_build_info,
-    eia_build_info,
     gen_info_table,
     hydro_time_tables,
     load_zones_table,
@@ -750,9 +750,16 @@ def gen_tables(gc, pudl_engine, scen_settings_dict):
 
         # find build_year, capacity_mw and capacity_mwh for existing generating
         # units online in this model_year for each gen cluster
-        existing_gens = gen_df.query("existing & plant_id_eia.notna()")
-        eia_unit_info = eia_build_info(gc, pudl_engine, existing_gens)
+        eia_unit_info = eia_build_info(gc)
         unit_df = gen_df.merge(eia_unit_info, on="Resource", how="left")
+
+        # apply capacity derating if needed (e.g., to get the right average output
+        # for small hydro)
+        if year_settings.get("derate_capacity"):
+            derate = unit_df["technology"].isin(year_settings.get("derate_techs", []))
+            unit_df.loc[derate, "capacity_mw"] *= unit_df.loc[
+                derate, "capacity_factor"
+            ].fillna(1)
 
         unit_dfs.append(unit_df)
 
@@ -761,10 +768,11 @@ def gen_tables(gc, pudl_engine, scen_settings_dict):
     gens_by_model_year = pd.concat(gen_dfs, ignore_index=True)
     units_by_model_year = pd.concat(unit_dfs, ignore_index=True)
 
-    # Update generic generators (distributed generation and a few others in the
-    # "existing" list but without EIA ids, so no build_year info yet). This is
-    # done after combining across model years, so we can (potentially) infer the
-    # amount built in each year from the change in capacity between model years.
+    # Update generic generators (Resources in the "existing" list that didn't
+    # get matching record(s) from the eia_unit_info, currently only distributed
+    # generation). This is done after combining across model years, so we could
+    # potentially infer the amount built in each year from the change in
+    # capacity between model years.
     units_by_model_year = add_generic_gen_build_info(
         units_by_model_year, scen_settings_dict
     )
@@ -775,14 +783,19 @@ def gen_tables(gc, pudl_engine, scen_settings_dict):
 
     # create by_build_year tables from these
 
-    # for existing gens, merge the repeated records from different model years
-    # and then aggregate by vintage Note: we assume generator cluster properties
-    # are unchanged across model years; if not, the next few chunks would need
-    # to average them for Switch instead of just dropping duplicates and merging
-    # back to the first gen row)
-    unit_info = units_by_model_year.drop_duplicates(
-        subset=["Resource", "plant_gen_id", "build_year"]
-    )
+    # Merge the repeated records for existing gens from different model years.
+    # We take the first row found for non-numeric columns and the mean for
+    # numeric columns, since values may vary across model years (e.g.,
+    # capacity_mw for a single unit can change between model years due to
+    # derating by the cluster average capacity factor, since the cluster makeup
+    # changes over time; fixed O&M rises over time for some plants)
+    dup_rules = {
+        c: "mean" if c in unit_df.select_dtypes(include="number").columns else "first"
+        for c in units_by_model_year.columns
+    }
+    unit_info = units_by_model_year.groupby(
+        ["Resource", "plant_gen_id", "build_year"], as_index=False
+    ).agg(dup_rules)
 
     # aggregate by build_year
     # this could in theory be done with groupby()[columns].sum(), but then
@@ -835,21 +848,60 @@ def gen_tables(gc, pudl_engine, scen_settings_dict):
         gens_by_build_year["new_build"] & gens_by_build_year["Existing_Cap_MW"].notna()
     ).sum() == 0, "Some new-build generators have Existing_Cap_MW assigned."
 
-    # This might be a better treatment of operation models.
-    # # if running an operation model, convert new build to existing with 0
-    # # capacity, to prevent the model from making any construction choices
-    # if first_value(scen_settings_dict).get("operation_model"):
-    #     new = gens_by_build_year["new_build"]
-    #     gens_by_build_year.loc[new, "existing"] = True
-    #     gens_by_build_year.loc[new, ["Existing_Cap_MW", "Existing_Cap_MWh"]] = 0
-    #     gens_by_build_year.loc[new, "new_build"] = False
-
-    # TODO: possibly reimplement code from
-    # https://github.com/switch-model/Switch-USA-PG/blob/786c68c3c5ba2d81b196362070794d4f6365927f/pg_to_switch.py#L227
-    # to avoid problems in post-solve due to predetermined generators after the
-    # start of the model
-
     return gens_by_model_year, gens_by_build_year
+
+
+def eia_build_info(gc: GeneratorClusters):
+    """
+    Return a dataframe showing Resource, plant_gen_id, build_year, capacity_mw
+    and capacity_mwh for all EIA generating units that were aggregated for the
+    previous call to gc.create_all_generators().
+
+    Note: capacity_mw will be de-rated according to the unit's average capacity
+    factor if specified in gc.settings (typical for small hydro, geothermal,
+    possibly biomass)
+
+    Inputs:
+    - gc: GeneratorClusters object previously used to call gc.create_all_generators
+    """
+
+    units = gc.all_units.copy()
+    # Construct a resource ID the same way PowerGenome does when "extra_outputs" is set
+    units["Resource"] = (
+        units["model_region"]
+        + "_"
+        + snake_case_col(units["technology"])
+        + "_"
+        + units["cluster"].astype(str)
+    )
+
+    # assign unique ID for each unit, for de-duplication later
+    units = create_plant_gen_id(units)
+
+    # set retirement age
+    # note: units has a retirement_age, but it's not completely filled in, and
+    # it may differ from what we are using in the model
+    retirement_ages = gc.settings.get("retirement_ages")
+    units["retirement_age"] = units["technology"].map(retirement_ages)
+
+    # drop any with no retirement year (generally only ~1 planned builds that
+    # don't have an online date so PG couldn't assign a retirement date)
+    units = units.query("retirement_year.notna()")
+
+    # infer the build date from retirement_year and retirement_age
+    # (may not be the right year, but will cause it to retire at the right
+    # time, which is generally most important)
+    units["build_year"] = (units["retirement_year"] - units["retirement_age"]).astype(
+        "Int64"
+    )
+
+    # make sure "capacity_mw" comes from the right column
+    capacity_col = gc.settings.get("capacity_col", "capacity_mw")
+    units["capacity_mw"] = units[capacity_col]
+
+    return units[
+        ["Resource", "plant_gen_id", "build_year", "capacity_mw", "capacity_mwh"]
+    ]
 
 
 def other_tables(
@@ -1363,6 +1415,20 @@ def year_name(years):
     # return "_".join(str(y) for y in yrs)
 
 
+def scenario_files(in_folder, out_folder, settings):
+    """
+    Create switch/scenarios*.txt, defining all the cases to run.
+    """
+    # get dataframe of all possible scenario input data
+    scen_def_fn = in_folder / settings["scenario_definitions_fn"]
+    scenario_definitions = pd.read_csv(scen_def_fn)
+
+    # need some way to list all the crosses that we do automatically;
+    # some of these are identified as PG scenarios, but we just do the cross
+    # on one element of the data (trans limits); some of them are just done outside PG to
+    # avoid creating too much data (carbon cost).
+
+
 """
 # settings for testing
 settings_file = "MIP_results_comparison/case_settings/26-zone/settings"
@@ -1406,8 +1472,8 @@ def main(
         If only one year is chosen with the --year flag, this will have no effect.
     """
     cwd = Path.cwd()
-    out_folder = cwd / results_folder
-    out_folder.mkdir(parents=True, exist_ok=True)
+    results_folder = cwd / results_folder
+    results_folder.mkdir(parents=True, exist_ok=True)
     # Load settings, create db connections, and build dictionary of settings across
     # cases/years
 
@@ -1515,8 +1581,8 @@ def main(
         # scen_settings_dict has all settings for this case, organized by year
         all_years = scen_settings_dict.keys()
         print(f"\nstarting case {c} ({', '.join(str(y) for y in all_years)})")
-        case_folder = out_folder / year_name(all_years) / c
-        case_folder.mkdir(parents=True, exist_ok=True)
+        out_folder = results_folder / year_name(all_years) / c
+        out_folder.mkdir(parents=True, exist_ok=True)
 
         first_year_settings = first_value(scen_settings_dict)
         final_year_settings = final_value(scen_settings_dict)
@@ -1537,7 +1603,7 @@ def main(
             all_fuel_prices,
             pudl_engine,
             scen_settings_dict,
-            case_folder,
+            out_folder,
             pg_engine,
             hydro_variability_new,
         )
@@ -1547,17 +1613,19 @@ def main(
             regions=final_year_settings["model_regions"],
             fuel_region_map=final_year_settings["aeo_fuel_region_map"],
             fuel_emission_factors=final_year_settings["fuel_emission_factors"],
-            out_folder=case_folder,
+            out_folder=out_folder,
         )
         other_tables(
             scen_settings_dict=scen_settings_dict,
-            out_folder=case_folder,
+            out_folder=out_folder,
         )
         transmission_tables(
             scen_settings_dict,
-            case_folder,
+            out_folder,
             pg_engine,
         )
+
+    scenario_files(input_folder, results_folder, settings)
 
 
 if __name__ == "__main__":

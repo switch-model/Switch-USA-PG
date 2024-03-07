@@ -121,15 +121,13 @@ def post_solve(m, outdir):
         # report any duplicates (hopefully none)
         dups = df.loc[df.duplicated(subset=dup_cols, keep=False), :]
         if not dups.empty:
-            df = df.drop_duplicates(subset=dup_cols, keep="first")
-            file_base, file_ext = os.path.splitext(filename)
-            dup_file = chained(next_in_path, file_base + ".dup" + file_ext)
-            to_csv(dups, dup_file)
-            print(
-                "\nWARNING: Ignoring duplicate predetermined projects with different data:"
-            )
-            print(dups)
-            print(f"(Saved in {dup_file}.)\n")
+            # keep the data from the later model, but save a copy of the
+            # duplicates in case the user wants to inspect it (these are fairly
+            # common because units sizes vary between periods due to derating
+            # with a capacity factor that may vary between periods, and fixed
+            # O&M rises over time for some technologies in PG)
+            df = df.drop_duplicates(subset=dup_cols, keep="last")
+            to_csv(dups, chained(next_in_path, "dup." + filename))
 
         return df
 
