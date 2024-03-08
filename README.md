@@ -102,7 +102,7 @@ want to work with this repository in the future.
 Set VS Code to use the switch-pg Python environment for future work:
 shift-ctrl/cmd-P > `Python: Select Interpreter` > search for `switch-pg` > enter
 
-# Download PowerGenome input data
+# Download PowerGenome input data and configure PowerGenome to use it
 
 In VS Code, choose Terminal > New Terminal, then run these commands in the
 terminal pane (inside the Switch-USA-PG directory):
@@ -110,34 +110,6 @@ terminal pane (inside the Switch-USA-PG directory):
 ```
 conda activate switch-pg
 python download_pg_data.py
-```
-
-# Configure PowerGenome
-
-In VS Code, click the Explorer icon at the top left corner, then open
-PowerGenome, right click on the powergenome folder inside and create a new file
-called ".env". Then paste the following into PowerGenome/powergenome/.env,
-replacing <Switch-USA-PG> with the full path to your `Switch-USA-PG` directory.
-(You can get the text for this path by right-clicking in the blank space below
-the files in the VS Code Explorer Pane on the left, then choosing "Copy Path".
-Then you can paste this into powergenome.env instead of <Switch-USA-PG>.)
-
-```
-PUDL_DB="<Switch-USA-PG>/pg_data/PowerGenome Data Files/PUDL Data/pudl.sqlite"
-PG_DB="<Switch-USA-PG>/pg_data/PowerGenome Data Files/pg_misc_tables_efs.sqlite"
-RESOURCE_GROUP_PROFILES="<Switch-USA-PG>/pg_data/PowerGenome Data Files/PowerGenome Resource Groups/generation_profiles"
-EFS_DATA="<Switch-USA-PG>/pg_data/PowerGenome Data Files/efs_files_utc"
-DISTRIBUTED_GEN_DATA="<Switch-USA-PG>/pg_data/PowerGenome Data Files"
-# defined in resources.yml, so not set here
-# RESOURCE_GROUPS=<not set>
-```
-
-Also create a `MIP_results_comparison/case_settings/26-zone/settings/env.yml`
-file with the following line (replace`<Switch-USA-PG>` with the path to your
-`Switch-USA-PG` directory) change the `` setting to
-
-```
-RESOURCE_GROUPS: "<Switch-USA-PG>/pg_data/corrected-20z-resource-groups"
 ```
 
 ## Notes about PowerGenome scenario configuration

@@ -1,0 +1,33 @@
+# All the files that end up in `PowerGenome Data Files` originate from
+# https://drive.google.com/drive/folders/1K5GWF5lbe-mKSTUSuJxnFdYGCdyDJ7iE
+# which is referenced from https://github.com/PowerGenome/PowerGenome#data
+# (links to individual files found via right click > share > copy link;
+# don't remove view?usp stuff from the end).
+# We download them selectively instead of downloading the whole folder
+# because the resource groups folder there is very large and we don't need
+# all of it.
+
+# The `corrected-20z-resource-groups` file (which gets unzipped to a folder) is
+# from custom Google Drive folder for MIP project:
+# https://drive.google.com/drive/u/2/folders/1KBdoonCeDfvAgQ10KpwVhmlyfKi1rY5K
+
+download_folders:
+  pg_data/PowerGenome Data Files/PUDL Data: https://drive.google.com/drive/folders/1z9BdvbwgpS5QjPTrcgyFZJUb-eN2vebu
+  pg_data/PowerGenome Data Files/PowerGenome Resource Groups/generation_profiles: https://drive.google.com/drive/folders/1ZYxnl4U_3HXlYPxm8qlmqyWB8NyC3PpG
+
+# note: .zip files will be replaced by their expanded version
+download_files:
+  pg_data/corrected-20z-resource-groups.zip: https://drive.google.com/file/d/1MXkdRW-YQ-hq3KzK_TbzTfD1-0CRZmdR/view?usp=drive_link
+  pg_data/PowerGenome Data Files/pg_misc_tables_efs.sqlite.zip: https://drive.google.com/file/d/1XrLOqVGNP1qjvsXeTt1YH2Pyppqad0fc/view?usp=drive_link
+  pg_data/PowerGenome Data Files/efs_files_utc.zip: https://drive.google.com/file/d/1dWA35bQpPksnSb6auybMbrIqyaBG6wBM/view?usp=drive_link
+  pg_data/PowerGenome Data Files/cambium_dg_data.zip: https://drive.google.com/file/d/1nbhWwOsNeOtcUew9Mn4QGuAtCsZo0VZ2/view?usp=drive_link
+
+env:
+  PUDL_DB: pg_data/PowerGenome Data Files/PUDL Data/pudl.sqlite
+  PG_DB: pg_data/PowerGenome Data Files/pg_misc_tables_efs.sqlite
+  RESOURCE_GROUP_PROFILES: pg_data/PowerGenome Data Files/PowerGenome Resource Groups/generation_profiles
+  EFS_DATA: pg_data/PowerGenome Data Files/efs_files_utc
+  DISTRIBUTED_GEN_DATA: pg_data/PowerGenome Data Files
+
+resource_groups:
+  26-zone: pg_data/corrected-20z-resource-groups

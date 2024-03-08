@@ -1,57 +1,10 @@
 """
-Retrieve and decompress input files to run PowerGenome.
+Retrieve and decompress input files to run PowerGenome and set PowerGenome
+parameters to access them.
 """
 
 import os, sys, re, zipfile
-import gdown
-
-# All the files that end up in `PowerGenome Data Files` originate from
-# https://drive.google.com/drive/folders/1K5GWF5lbe-mKSTUSuJxnFdYGCdyDJ7iE
-# which is referenced from https://github.com/PowerGenome/PowerGenome#data
-# (links to individual files found via right click > share > copy link;
-# don't remove view?usp stuff from the end).
-# We download them selectively instead of downloading the whole folder
-# because the resource groups folder there is very large and we don't need
-# all of it.
-
-# The `corrected-20z-resource-groups` file (which gets unzipped to a folder) is
-# from custom Google Drive folder for MIP project:
-# https://drive.google.com/drive/u/2/folders/1KBdoonCeDfvAgQ10KpwVhmlyfKi1rY5K
-
-# TODO: move these download lists into a pg_data.yml file
-
-needed_folders = [
-    (
-        "pg_data/PowerGenome Data Files/PUDL Data",
-        "https://drive.google.com/drive/folders/1z9BdvbwgpS5QjPTrcgyFZJUb-eN2vebu",
-    ),
-    (
-        "pg_data/PowerGenome Data Files/PowerGenome Resource Groups/generation_profiles",
-        "https://drive.google.com/drive/folders/1ZYxnl4U_3HXlYPxm8qlmqyWB8NyC3PpG",
-    ),
-    # (
-    #     "pg_data/PowerGenome Data Files/PowerGenome Resource Groups/resource_groups/us-26-zone",
-    #     "https://drive.google.com/drive/folders/1RmHofRL5-xcuCf3zvgIeqcmueBZVxlrn",
-    # ),
-]
-needed_files = [  # note: .zip files will be replaced by their expanded version
-    (
-        "pg_data/corrected-20z-resource-groups.zip",
-        "https://drive.google.com/file/d/1MXkdRW-YQ-hq3KzK_TbzTfD1-0CRZmdR/view?usp=drive_link",
-    ),
-    (
-        "pg_data/PowerGenome Data Files/pg_misc_tables_efs.sqlite.zip",
-        "https://drive.google.com/file/d/1XrLOqVGNP1qjvsXeTt1YH2Pyppqad0fc/view?usp=drive_link",
-    ),
-    (
-        "pg_data/PowerGenome Data Files/efs_files_utc.zip",
-        "https://drive.google.com/file/d/1dWA35bQpPksnSb6auybMbrIqyaBG6wBM/view?usp=drive_link",
-    ),
-    (
-        "pg_data/PowerGenome Data Files/cambium_dg_data.zip",
-        "https://drive.google.com/file/d/1nbhWwOsNeOtcUew9Mn4QGuAtCsZo0VZ2/view?usp=drive_link",
-    ),
-]
+import gdown, yaml, powergenome
 
 
 def first_subdir(filename):
@@ -84,7 +37,10 @@ def unzip(filename):
 
 
 def main(filter=[]):
-    for dest, url in needed_folders:
+    with open("pg_data.yml", "r") as f:
+        settings = yaml.safe_load(f)
+
+    for dest, url in settings["download_folders"].items():
         if not filter or any(f in dest for f in filter):
             print(f"\nretrieving {dest}")
             files = gdown.download_folder(url, output=dest)
@@ -92,7 +48,7 @@ def main(filter=[]):
                 if filename.endswith(".zip"):
                     unzip(filename)
 
-    for dest, url in needed_files:
+    for dest, url in settings["download_files"].items():
         if not filter or any(f in dest for f in filter):
             print(f"\nretrieving {dest}")
             filename = gdown.download(url, fuzzy=True, output=dest)
@@ -100,69 +56,29 @@ def main(filter=[]):
                 # unzip the file and delete the .zip
                 unzip(filename)
 
+    # create powergenome/.env
+    env_file = os.path.join(powergenome.__path__[0], ".env")
+    rel_path = os.path.relpath(env_file, os.getcwd())
+    if not rel_path.startswith(".."):
+        # change to relative path if powergenome is in a subdir, for neater reporting
+        env_file = rel_path
+    print(f"\ncreating {env_file}")
+    with open(env_file, "w") as f:
+        for var, dest in settings["env"].items():
+            abs_dest = os.path.abspath(dest)
+            f.write(f"{var}='{abs_dest}'\n")
 
-###############
-# code below is obsolete
-# helpers from https://stackoverflow.com/a/39225272
-def download_file_from_google_drive(id):
-    URL = "https://docs.google.com/uc?export=download&confirm=1"
+    # create case_settings/**/env.yml
+    for model, dest in settings["resource_groups"].items():
+        abs_dest = os.path.abspath(dest)
+        yml_file = os.path.join(
+            "MIP_results_comparison", "case_settings", model, "settings", "env.yml"
+        )
+        print(f"\ncreating {yml_file}")
+        with open(yml_file, "w") as f:
+            f.write(f"RESOURCE_GROUPS: '{abs_dest}'\n")
 
-    session = requests.Session()
-
-    response = session.get(URL, params={"id": id}, stream=True)
-    token = get_confirm_token(response)
-
-    if token:
-        params = {"id": id, "confirm": token}
-        response = session.get(URL, params=params, stream=True)
-
-    # this is good enough for now, but if we ever have filenames
-    # with non-ascii characters, we'll need to use this:
-    # https://stackoverflow.com/a/73418983
-    # from https://stackoverflow.com/a/51570425
-    filename = (
-        re.findall(
-            "filename\*?=([^;]+)",
-            response.headers["Content-Disposition"],
-            flags=re.IGNORECASE,
-        )[0]
-        .strip()
-        .strip('"')
-    )
-
-    # if os.path.exists(filename):
-    #     print("deleting existing f{filename}.")
-    #     os.remove(filename)
-
-    print(f"retrieving {filename}.")
-    save_response_content(response, filename)
-
-    if response.headers["Content-Type"] == "application/zip":
-        # unzip the file and delete the .zip
-        print(f"unzipping {filename}")
-        with zipfile.ZipFile(filename, "r") as zip_ref:
-            zip_ref.extractall(".")
-        os.remove(filename)
-
-
-def get_confirm_token(response):
-    for key, value in response.cookies.items():
-        if key.startswith("download_warning"):
-            return value
-
-    return None
-
-
-def save_response_content(response, destination):
-    CHUNK_SIZE = 32768
-
-    with open(destination, "wb") as f:
-        for chunk in response.iter_content(CHUNK_SIZE):
-            if chunk:  # filter out keep-alive new chunks
-                f.write(chunk)
-
-
-########### end helpers
+    print(f"\n{sys.argv[0]} finished.")
 
 
 if __name__ == "__main__":
