@@ -698,6 +698,26 @@ def gen_tables(gc, pudl_engine, scen_settings_dict):
         gen_df["Resource"] = gen_df["Resource"].str.rstrip("_")
         gen_df["technology"] = gen_df["technology"].str.rstrip("_")
 
+        # gather some extra data from PowerGenome
+        gen_df = add_misc_gen_values(gen_df, year_settings)
+        gen_df = hydro_energy_to_power(
+            gen_df,
+            year_settings.get("hydro_factor"),
+            year_settings.get("regional_hydro_factor", {}),
+        )
+        gen_df = add_co2_costs_to_o_m(gen_df)
+
+        # apply capacity derating if needed (e.g., to get the right average
+        # output for small hydro); Switch restricts output via
+        # gen_forced_outage_rate; we supersede the previous forced outage rate,
+        # since we assume the capacity_factor is based on historical output,
+        # including the effect of forced outages
+        if year_settings.get("derate_capacity"):
+            derate = gen_df["technology"].isin(year_settings.get("derate_techs", []))
+            gen_df.loc[derate, "gen_forced_outage_rate"] = 1 - gen_df.loc[
+                derate, "capacity_factor"
+            ].fillna(1).clip(0, 1)
+
         # If running an operation model, only consider existing projects. This
         # is rarely used; normally we setup operation models based on solved
         # capacity-planning models, but if specified, we drop the option for
@@ -736,30 +756,12 @@ def gen_tables(gc, pudl_engine, scen_settings_dict):
         # record which model year these generators could be used in
         gen_df["model_year"] = year_settings["model_year"]
 
-        # gather some extra data
-        gen_df = add_misc_gen_values(gen_df, year_settings)
-        gen_df = hydro_energy_to_power(
-            gen_df,
-            year_settings.get("hydro_factor"),
-            year_settings.get("regional_hydro_factor", {}),
-        )
-
-        gen_df = add_co2_costs_to_o_m(gen_df)
-
         gen_dfs.append(gen_df)
 
         # find build_year, capacity_mw and capacity_mwh for existing generating
         # units online in this model_year for each gen cluster
         eia_unit_info = eia_build_info(gc)
         unit_df = gen_df.merge(eia_unit_info, on="Resource", how="left")
-
-        # apply capacity derating if needed (e.g., to get the right average output
-        # for small hydro)
-        if year_settings.get("derate_capacity"):
-            derate = unit_df["technology"].isin(year_settings.get("derate_techs", []))
-            unit_df.loc[derate, "capacity_mw"] *= unit_df.loc[
-                derate, "capacity_factor"
-            ].fillna(1)
 
         unit_dfs.append(unit_df)
 

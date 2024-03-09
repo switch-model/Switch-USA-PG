@@ -166,7 +166,7 @@ def gen_info_table(
     retirement_age,
 ):
     """
-    Create the generation_projects_info table
+    Create the gen_info table
     Inputs:
         * gens: from PowerGenome gc.create_all_generators() with some extra data
         * spur_capex_mw_mile: based on the settings file ('transmission_investment_cost')['spur']['capex_mw_mile']
@@ -1492,7 +1492,12 @@ def balancing_areas(
         plants_entity_eia = plants_eia.sort_values(
             "report_date", ascending=False
         ).drop_duplicates(
-            subset=["plant_id_eia", "balancing_authority_code_eia"], keep="first"
+            # take the latest reported row for this plant; this gets the latest
+            # balancing_authority_code_eia if a plant has moved and also avoids
+            # problems with unreported balancing_authority_code_eia's in some
+            # earlier years.
+            subset=["plant_id_eia"],
+            keep="first",
         )
     # dataframe with only balancing_authority_code_eia and plant_id_eia
     plants_entity_eia = plants_entity_eia[
