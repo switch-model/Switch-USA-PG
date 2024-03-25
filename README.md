@@ -138,6 +138,13 @@ python pg_to_switch.py MIP_results_comparison/case_settings/26-zone/settings swi
 python pg_to_switch.py MIP_results_comparison/case_settings/26-zone/settings switch/26-zone/in/ --case-id base_short
 ```
 
+On an HPC system that uses the slurm scheduling manager, this can be done
+as follows:
+
+```
+srun setup_cases.slurm
+```
+
 By default, `pg_to_switch.py` will generate multi-year (foresight) models for each case-id, with each model using all available years of data. If you'd like to make single-period (myopic)) models, you can use the `--myopic` flag. To generate data for a specific year, use `--year NNNN`. To generate data for multiple specific years, use `--year MMMM --year NNNN`, etc.
 
 If you omit the `--case-id` flag, `pg_to_switch.py` will generate inputs for all available cases. This is probably not a good idea, since they will require a lot of space and many of them will not be needed.
@@ -178,6 +185,17 @@ switch solve-scenarios --scenario-list scenarios_2050.txt
 to solve individual scenarios, you can use something like this:
 ```
 switch solve-scenarios --scenario-list scenarios_2030.txt --scenario base_short
+```
+
+On an HPC system that uses the slurm scheduling manager, scenarios can be run
+as follows:
+
+```
+cd switch
+srun solve_scenarios.slurm --scenario-list scenarios_foresight.txt
+srun solve_scenarios.slurm --scenario-list scenarios_2030.txt
+srun -d <jobid for 2030 scenarios> solve_scenarios.slurm --scenario-list scenarios_2040.txt
+srun -d <jobid for 2040 scenarios> solve_scenarios.slurm --scenario-list scenarios_2050.txt
 ```
 
 # Prepare next stage of myopic models

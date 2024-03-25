@@ -163,14 +163,12 @@ def add_generic_gen_build_info(units_by_model_year, scen_settings_dict):
 def gen_info_table(
     all_gens,
     spur_capex_mw_mile,
-    retirement_age,
 ):
     """
     Create the gen_info table
     Inputs:
         * gens: from PowerGenome gc.create_all_generators() with some extra data
         * spur_capex_mw_mile: based on the settings file ('transmission_investment_cost')['spur']['capex_mw_mile']
-        * retirement age: pulled from settings
         * cogen_tech, baseload_tech, energy_tech, sched_outage_tech, forced_outage_tech
             - these are user defined dictionaries.  Will map values based on the technology
     Output columns:
@@ -179,6 +177,7 @@ def gen_info_table(
         * gen_energy_source: based on energy_tech input
         * gen_load_zone: IPM region
         * gen_max_age: based on retirement_age
+        * gen_can_retire_early: based on Can_Retire and/or New_Build from PowerGenome
         * gen_is_variable: only solar and wind are true
         * gen_is_baseload: from PowerGenome
         * gen_full_load_heat_rate: based on Heat_Rate_MMBTU_per_MWh from all_gen
@@ -219,51 +218,48 @@ def gen_info_table(
     ] = (gen_info["spur_capex_mw_mi"] * gen_info["spur_miles"])
     gen_info = gen_info.drop(["spur_miles", "spur_capex_mw_mi"], axis=1)
 
-    # for gen_is_variable - only solar and wind technologies are true
-    technology = gen_info["technology"].to_list()
-
-    def Filter(list1, list2):
-        return [n for n in list1 if any(m in n for m in list2)]
-
+    # clean up gen_is_variable; usually only solar and wind technologies are true
     gen_info["gen_is_variable"] = gen_info["gen_is_variable"].astype(bool)
-    # gen_storage_efficiency and gen_store_to_release_ratio
-    battery = set(Filter(technology, ["Battery", "Batteries", "Storage"]))
-    gen_info.loc[gen_info["technology"].isin(battery), "gen_storage_efficiency"] = (
+
+    # gen_storage_efficiency and gen_store_to_release_ratio (input vs output MW rating)
+    storage_gens = gen_info["STOR"] == 1
+    gen_info.loc[storage_gens, "gen_storage_efficiency"] = (
         gen_info["Eff_Up"] * gen_info["Eff_Down"]
     )
-    gen_info.loc[gen_info["technology"].isin(battery), "gen_store_to_release_ratio"] = 1
+    gen_info.loc[storage_gens, "gen_store_to_release_ratio"] = 1
     gen_info["gen_min_build_capacity"] = 0
     gen_info["gen_can_provide_cap_reserves"] = 1
 
     gen_info["gen_self_discharge_rate"] = None
     gen_info["gen_storage_energy_to_power_ratio"] = None
 
-    # retirement ages based on settings file still need to be updated
-    for tech, age in retirement_age.items():
-        gen_info.loc[
-            gen_info["technology"].str.contains(tech, case=False), "gen_max_age"
-        ] = age
-    # Tell user about missing retirement ages
-    if gen_info["gen_max_age"].isna().any():
-        missing_ret_tech = gen_info.query("gen_max_age.isna()")["technology"].unique()
-        print(
-            f"The technologies {missing_ret_tech} do not have a valid retirement age in "
-            "your settings file."
-        )
-
     gen_info["gen_dbid"] = gen_info["GENERATION_PROJECT"]
 
-    gen_info.loc[gen_info["gen_is_variable"], "gen_capacity_limit_mw"] = gen_info[
-        "Max_Cap_MW"
-    ]
+    # get capacity limit if any, but ignore -1 (existing plants that won't
+    # show up as buildable in the future anyway)
+    gen_info["gen_capacity_limit_mw"] = gen_info["Max_Cap_MW"].replace({-1: None})
+
+    # identify generators that can retire early
+    try:
+        # settings for newer GenX
+        gen_info['gen_can_retire_early'] = gen_info['Can_Retire'].astype("Int64")
+    except KeyError:
+        # settings for older GenX
+        gen_info['gen_can_retire_early'] = (gen_info['New_Build'] >= 0).astype("Int64")
 
     # rename columns
     gen_info.rename(
         columns={
             "technology": "gen_tech",
             "region": "gen_load_zone",
+            "retirement_age": "gen_max_age",
             "Heat_Rate_MMBTU_per_MWh": "gen_full_load_heat_rate",
             "Var_OM_Cost_per_MWh": "gen_variable_om",
+            # gen_amortization_period is optional and often not needed (Switch
+            # will use gen_max_age by default). But we always report it in case
+            # the settings use a longer retirement_age (or none) to prevent
+            # age-based retirement.
+            "cap_recovery_years": "gen_amortization_period",
         },
         inplace=True,
     )
@@ -279,6 +275,8 @@ def gen_info_table(
         "gen_energy_source",
         "gen_load_zone",
         "gen_max_age",
+        "gen_amortization_period",
+        "gen_can_retire_early",
         "gen_is_variable",
         "gen_is_baseload",
         "gen_full_load_heat_rate",

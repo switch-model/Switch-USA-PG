@@ -213,8 +213,10 @@ def generator_and_load_files(
 
     gen_build_costs_file(gens_by_build_year, out_folder)
 
-    # this could use either gens_by_model_year or gens_by_build_year, since it
-    # just uses one row for each gen
+    # This uses gens_by_model_year, to increase the chance that a generator
+    # cluster that exists in an early year will also be modeled in a later year,
+    # even if it retires, so we can reuse that info in chained models where we
+    # turn off age-based retirement.
     # We have to send the fuel prices so it can check which gens use a real fuel
     # and which don't, because PowerGenome gives a heat rate for all of them.
     gen_info_file(first_year_settings, gens_by_model_year, all_fuel_prices, out_folder)
@@ -524,10 +526,11 @@ def gen_info_file(
     # for all rows)
     gens = gens_by_model_year.drop_duplicates(subset="Resource")
 
+    set_retirement_age(gens, settings)
+
     gen_info = gen_info_table(
         gens,
         settings.get("transmission_investment_cost")["spur"]["capex_mw_mile"],
-        settings.get("retirement_ages"),
     )
 
     graph_tech_colors_data = {
@@ -603,14 +606,6 @@ def gen_info_file(
     gen_info = gen_info.drop(columns=ESR_col + min_cap_col)
 
     gen_info.to_csv(out_folder / "gen_info.csv", index=False, na_rep=".")
-
-    # make alternative versions with early retirement options
-    gen_info.assign(gen_can_suspend=1).to_csv(
-        out_folder / "gen_info.can_suspend.csv", index=False, na_rep="."
-    )
-    gen_info.assign(gen_can_retire_early=1).to_csv(
-        out_folder / "gen_info.can_retire_early.csv", index=False, na_rep="."
-    )
 
     ################
     # ESR and min_cap programs
@@ -762,6 +757,12 @@ def gen_tables(gc, pudl_engine, scen_settings_dict):
         # units online in this model_year for each gen cluster
         eia_unit_info = eia_build_info(gc)
         unit_df = gen_df.merge(eia_unit_info, on="Resource", how="left")
+        # drop units that don't survive to this model year (PowerGenome does
+        # this to gc.units_model before clustering (I think), but eia_build_info
+        # uses gc.all_units, which still includes units that have aged out.)
+        # Note: PG uses a standard that retirement_year must be > model_year
+        # (not >= ) to be available, so we stick with that.
+        unit_df = unit_df.query("retirement_year > model_year")
 
         unit_dfs.append(unit_df)
 
@@ -802,7 +803,8 @@ def gen_tables(gc, pudl_engine, scen_settings_dict):
     # aggregate by build_year
     # this could in theory be done with groupby()[columns].sum(), but then
     # pandas 1.4.4 sometimes drops capacity_mw for this dataframe (seems to happen
-    # with columns where one's name is a shorter version of the other)
+    # with columns where one's name is a shorter version of the other, and can't
+    # be reproduced if you save the table as .csv and read it back in.)
     build_year_info = unit_info.groupby(["Resource", "build_year"], as_index=False).agg(
         {"capacity_mw": "sum", "capacity_mwh": "sum"}
     )
@@ -852,19 +854,31 @@ def gen_tables(gc, pudl_engine, scen_settings_dict):
 
     return gens_by_model_year, gens_by_build_year
 
+def set_retirement_age(df, settings):
+    # set retirement age (500 years if not specified) This uses the same logic
+    # as powergenome.generators.label_retirement_year(), which doesn't seem to
+    # get called for a lot of the generators we aer using.
+    # Note: for some reason, in the economic retirement cases, retirement_ages
+    # comes back as None instead of a missing entry or empty dict, so we work
+    # around that
+    retirement_ages = settings.get("retirement_ages") or {}
+    df["retirement_age"] = df["technology"].map(retirement_ages).fillna(500)
+    return df
+
 
 def eia_build_info(gc: GeneratorClusters):
     """
-    Return a dataframe showing Resource, plant_gen_id, build_year, capacity_mw
-    and capacity_mwh for all EIA generating units that were aggregated for the
+    Return a dataframe showing Resource, plant_gen_id, build_year,
+    retirement_year, planned_retirement_year (if any), capacity_mw and
+    capacity_mwh for all EIA generating units that were aggregated for the
     previous call to gc.create_all_generators().
 
     Note: capacity_mw will be de-rated according to the unit's average capacity
     factor if specified in gc.settings (typical for small hydro, geothermal,
     possibly biomass)
 
-    Inputs:
-    - gc: GeneratorClusters object previously used to call gc.create_all_generators
+    Inputs: - gc: GeneratorClusters object previously used to call
+    gc.create_all_generators
     """
 
     units = gc.all_units.copy()
@@ -880,11 +894,10 @@ def eia_build_info(gc: GeneratorClusters):
     # assign unique ID for each unit, for de-duplication later
     units = create_plant_gen_id(units)
 
-    # set retirement age
-    # note: units has a retirement_age, but it's not completely filled in, and
-    # it may differ from what we are using in the model
-    retirement_ages = gc.settings.get("retirement_ages")
-    units["retirement_age"] = units["technology"].map(retirement_ages)
+    # Set retirement age (units has a retirement_age, but it's not completely
+    # filled in.) We do this temporarily here so we can back-calculate the
+    # right in-service year to assign
+    set_retirement_age(units, gc.settings)
 
     # drop any with no retirement year (generally only ~1 planned builds that
     # don't have an online date so PG couldn't assign a retirement date)
@@ -897,12 +910,23 @@ def eia_build_info(gc: GeneratorClusters):
         "Int64"
     )
 
+    # create a planned_retirement_year column so we can respect that if needed
+    units["planned_retirement_year"] = units["planned_retirement_date"].dt.year
+
     # make sure "capacity_mw" comes from the right column
     capacity_col = gc.settings.get("capacity_col", "capacity_mw")
     units["capacity_mw"] = units[capacity_col]
 
     return units[
-        ["Resource", "plant_gen_id", "build_year", "capacity_mw", "capacity_mwh"]
+        [
+            "Resource",
+            "plant_gen_id",
+            "build_year",
+            "retirement_year",
+            "planned_retirement_year",
+            "capacity_mw",
+            "capacity_mwh",
+        ]
     ]
 
 

@@ -4,14 +4,18 @@ todo:
 
 + make sure switch can run with gen_build_predetermined after start of study (may cause problems in post solve); if not, drop any unusable gens in pg_to_switch
 
-- add retire_early and retire_late options to gen_build_suspend and set that in options.txt; will also need to add the can_suspend flags below, so we can use this
-module full-time
++ add retire_early and retire_late options to gen_build_suspend and set that in options.txt; will also need to add the gen_can_retire_early flag, so we can use this module full-time
+
++ finish implementing retirement logic: prevent plants from doing age-based retirement if they don't already
+  have a firm retirement date. (We did this by implementing PowerGenome's approach for the retirement cases,
+  which is to set no retirement age, which then gets translated into a 500 year life, and also to look at
+  the New_Build and/or Can_Retire flags to see which ones are allowed to have economic retirement.)
 
 + add hydrogen as a fuel
 
 + add gen_can_suspend and gen_can_retire_early settings (both default to 0) to gen_info.csv for use by gen_build_suspend (if gen_can_retire and not gen_can_suspend, require later suspensions >= previous suspensions for each gen/vintage)
 
-- add --retire {early, mid, late} flag for gen_build, to control whether
++ add --retire {early, mid, late} flag for gen_build, to control whether
   retirement (and construction) are moved to the start, middle or end of the
   period when they occur (which affects how we decide what is online during that
   period)
@@ -19,11 +23,20 @@ module full-time
 + resolve cases where gen_build_predetermined for 2040 has capacity that wasn't in the 2030 file (e.g., with date of construction in 2025) or has less capacity than the 2030 file (e.g., BASN_natural_gas_fired_combined_cycle_1,1994 is 141 Mw in 2030 and 53 MW in 2040). Could the second part be something about clustering plants that are already scheduled to retire? Do we not use a uniform retirement age for each cluster?
 + get fixed O&M to show up for existing plants so there is money to save by retiring them
 + update transmission scenario definitions to all branch off base_short instead of using separate dirs for most
+
+- make sure balancing_areas() works with new generator tables
+
+- propagate ramp rate limits and minimum load from PG to switch input files (see notes below)
+
 - add code to pg_to_switch to auto-generate scenarios.txt (for all possible cases), depending on whether it is a pre-chain year, post-chain year, which transmission and co2 costs are used, whether retirement or ramp limits are enabled, etc.
+
++ setup .slurm scripts to run the scenarios as array jobs with different jobs
+  for different years and dependencies between them
+
+- incorporate economic retirements and --retire early flag into reported capacity for MIP
+
 - make dirs a more readable color in ls on hpc
-- setup .slurm scripts to run the scenarios as array jobs with different jobs for different years and dependencies between them (can we have dependencies between tasks, so 2040 case 1 depends on 2030 case 1?)
 - setup hpc to share history right away between sessions
-- incorporate early retirements into reported capacity for MIP
 
 (later) grapple somehow with the fact that powergenome thinks it's setting up scenario dirs, but really it's data dirs, and then a scenario consists of a data dir plus some other settings
 (later) implement transmission-limit cases in pipeline (caps)
@@ -44,16 +57,20 @@ create a script to setup the alternative cases (alternative input files for base
 + Foresight with sample weeks​
 - save results in MIP_results_comparison
 
-later:
-- Unit commitment​
+- Unit commitment​ (ramp limits)
   - update pg_switch.py (Ramp_Up_Percentage, Ramp_Dn_Percentage and maybe Min_Power returned by add_misc_gen_values)
+  - give these names and implement the percent ramp rules in a side module
+    gen_ramp_limits (should these be a percentage of capacity committed in previous
+    timepoint or current timepoint?)
+
+
 - Best effort​ (all of the above)
 
-eventually: use switch_params.py to define scenarios.txt somehow
+- eventually: use switch_params.py to define scenarios.txt somehow
 
-eventually: more cases, e.g., longer strips of weeks and maybe tx/carbon cost cases)
+- eventually: more cases, e.g., longer strips of weeks and maybe tx/carbon cost cases)
 
-run all the models
++ run all the models
 
 
 old notes:

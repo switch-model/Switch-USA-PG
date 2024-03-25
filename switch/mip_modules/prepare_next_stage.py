@@ -104,7 +104,7 @@ def post_solve(m, outdir):
         # path.parent.mkdir(parents=True, exist_ok=True)
         df.to_csv(path, index=False, na_rep=".")
 
-    def merge_build_data(df, filename):
+    def merge_build_data(df, filename, keep="last"):
         """
         Merge construction or cost data in dataframe df with equivalent data
         from next model, dropping duplicates (same project and period) and
@@ -121,12 +121,14 @@ def post_solve(m, outdir):
         # report any duplicates (hopefully none)
         dups = df.loc[df.duplicated(subset=dup_cols, keep=False), :]
         if not dups.empty:
-            # keep the data from the later model, but save a copy of the
-            # duplicates in case the user wants to inspect it (these are fairly
-            # common because units sizes vary between periods due to derating
-            # with a capacity factor that may vary between periods, and fixed
-            # O&M rises over time for some technologies in PG)
-            df = df.drop_duplicates(subset=dup_cols, keep="last")
+            # Keep the data from one model, but save a copy of the duplicates in
+            # case the user wants to inspect them (these are fairly common
+            # because units sizes vary between periods due to derating with a
+            # capacity factor that may vary between periods, and fixed O&M rises
+            # over time for some technologies in PG; retirements also create
+            # differences between predetermined capacity in the dataframe and in
+            # the next model).
+            df = df.drop_duplicates(subset=dup_cols, keep=keep)
             to_csv(dups, chained(next_in_path, "dup." + filename))
 
         return df
@@ -148,9 +150,32 @@ def post_solve(m, outdir):
         }
     )
     predet = build_mw.merge(build_mwh, how="left")
-    # drop unbuilt options
+
+    # treat any retired capacity as if it was never built
+    retire = read_csv(out_path, "SuspendGen.csv").rename(
+        columns={
+            "GEN_BLD_SUSPEND_YRS_1": "GENERATION_PROJECT",
+            "GEN_BLD_SUSPEND_YRS_2": "build_year",
+            "GEN_BLD_SUSPEND_YRS_3": "retire_year",
+            "SuspendGen": "retire_mw",
+        }
+    )
+    gen_info = read_csv(possibly_chained(in_path, "gen_info.csv"))
+    if not "gen_can_suspend" in gen_info.columns:
+        gen_info["gen_can_suspend"] = 0
+    must_retire_gens = gen_info.query("gen_can_suspend == 0").iloc[0, :]
+    retire = retire.loc[
+        retire["GENERATION_PROJECT"].isin(must_retire_gens) & (retire["retire_mw"] > 0),
+        :,
+    ]
+    predet_cols = predet.columns
+    predet = predet.merge(retire, how="left")
+    predet["build_gen_predetermined"] -= predet["retire_mw"].fillna(0)
+    predet = predet[predet_cols]
+
+    # drop unused options
     predet = predet.query(
-        "build_gen_predetermined > 0 | build_gen_energy_predetermined > 0"
+        "(build_gen_predetermined > 0) | (build_gen_energy_predetermined > 0)"
     )
     # drop any that don't appear in the next model (this should never occur
     # in principle, but in practice in the MIP project there are some
@@ -159,8 +184,9 @@ def post_solve(m, outdir):
     predet = predet.merge(next_gen_info["GENERATION_PROJECT"])
 
     # merge with any from the next model, to pickup predetermined construction
-    # after this part of the study
-    predet = merge_build_data(predet, "gen_build_predetermined.csv")
+    # after this part of the study; when there are duplicates, keep the first
+    # one (the dataframe) to propagate retirements forward
+    predet = merge_build_data(predet, "gen_build_predetermined.csv", keep="first")
     to_csv(predet, chained(next_in_path, "gen_build_predetermined.csv"))
 
     # use this model's costs for everything that was built and next model's
