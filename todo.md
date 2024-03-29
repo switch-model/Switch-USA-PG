@@ -41,6 +41,8 @@ todo:
 (later) grapple somehow with the fact that powergenome thinks it's setting up scenario dirs, but really it's data dirs, and then a scenario consists of a data dir plus some other settings
 (later) implement transmission-limit cases in pipeline (caps)
 
+- add code to powergenome.util.init_pudl_connection to give an error if the PG_DB file doesn't exist, instead of creating a new empty one
+
 generate case data: base_short, base_short_current_policies, base_short_no_ccs
 
 

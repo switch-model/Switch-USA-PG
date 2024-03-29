@@ -75,6 +75,7 @@ from conversion_functions import (
     first_value,
     final_key,
     final_value,
+    km_per_mile,
 )
 
 from powergenome.load_profiles import (
@@ -584,10 +585,11 @@ def gen_info_file(
     non_fuel_table = graph_tech_types_table[
         ~graph_tech_types_table["energy_source"].isin(fuels)
     ]
-    non_fuel_energy = list(set(non_fuel_table["energy_source"].to_list()))
-    non_fuel_energy_table = pd.DataFrame(non_fuel_energy, columns=["energy_source"])
+    non_fuel_energy_table = (
+        non_fuel_table[["energy_source"]].drop_duplicates().sort_values("energy_source")
+    )
     gen_info.loc[
-        gen_info["gen_energy_source"].isin(non_fuel_energy),
+        gen_info["gen_energy_source"].isin(non_fuel_energy_table["energy_source"]),
         "gen_full_load_heat_rate",
     ] = None
 
@@ -854,6 +856,7 @@ def gen_tables(gc, pudl_engine, scen_settings_dict):
 
     return gens_by_model_year, gens_by_build_year
 
+
 def set_retirement_age(df, settings):
     # set retirement age (500 years if not specified) This uses the same logic
     # as powergenome.generators.label_retirement_year(), which doesn't seem to
@@ -882,14 +885,17 @@ def eia_build_info(gc: GeneratorClusters):
     """
 
     units = gc.all_units.copy()
-    # Construct a resource ID the same way PowerGenome does when "extra_outputs" is set
-    units["Resource"] = (
-        units["model_region"]
-        + "_"
-        + snake_case_col(units["technology"])
-        + "_"
-        + units["cluster"].astype(str)
-    )
+
+    if "Resource" not in units.columns:
+        # PowerGenome before March 2024
+        # Construct a resource ID the same way PowerGenome does when "extra_outputs" is set
+        units["Resource"] = (
+            units["model_region"]
+            + "_"
+            + snake_case_col(units["technology"])
+            + "_"
+            + units["cluster"].astype(str)
+        )
 
     # assign unique ID for each unit, for de-duplication later
     units = create_plant_gen_id(units)
@@ -1198,12 +1204,13 @@ def transmission_tables(scen_settings_dict, out_folder, pg_engine):
         )
 
         line_loss = network_line_loss(transmission=transmission, settings=settings)
-        reinforcement_cost = network_reinforcement_cost(
-            transmission=transmission, settings=settings
-        )
-        max_reinforcement = network_max_reinforcement(
-            transmission=transmission, settings=settings
-        )
+        # unused
+        # reinforcement_cost = network_reinforcement_cost(
+        #     transmission=transmission, settings=settings
+        # )
+        # max_reinforcement = network_max_reinforcement(
+        #     transmission=transmission, settings=settings
+        # )
         transmission = agg_transmission_constraints(
             pg_engine=pg_engine, settings=settings
         )
@@ -1213,30 +1220,17 @@ def transmission_tables(scen_settings_dict, out_folder, pg_engine):
             "capex_mw_mile"
         ]
 
-        def region_avg(tx_capex_mw_mile_dict, region1, region2):
-            r1_value = tx_capex_mw_mile_dict[region1]
-            r2_value = tx_capex_mw_mile_dict[region2]
-            r_avg = mean([r1_value, r2_value])
-            return r_avg
-
-        def create_transm_line_col(lz1, lz2, zone_dict):
-            t_line = zone_dict[lz1] + "-" + zone_dict[lz2]
-            return t_line
-
-        transmission_lines = transmission_lines_table(
-            line_loss, add_cap, tx_capex_mw_mile_dict, zone_dict, settings
+        transmission_lines, trans_capital_cost_per_mw_km = transmission_lines_table(
+            line_loss,
+            add_cap,
+            tx_capex_mw_mile_dict,
+            zone_dict,
+            settings,
         )
         transmission_lines
 
-        trans_capital_cost_per_mw_km = (
-            min(
-                settings.get("transmission_investment_cost")["tx"][
-                    "capex_mw_mile"
-                ].values()
-            )
-            / 1.60934
-        )
     else:
+        # use .csv file from settings["user_transmission_costs"]
         transmission_lines = pd.read_csv(
             settings["input_folder"] / settings["user_transmission_costs"]
         )
@@ -1258,6 +1252,7 @@ def transmission_tables(scen_settings_dict, out_folder, pg_engine):
                     settings.get("target_usd_year"),
                 ).round(0)
                 adjusted_costs.append(adj_cost)
+
             transmission_lines["total_interconnect_annuity_mw"] = adjusted_annuities
             transmission_lines["total_interconnect_cost_mw"] = adjusted_costs
             transmission_lines["adjusted_dollar_year"] = settings.get("target_usd_year")
@@ -1295,7 +1290,9 @@ def transmission_tables(scen_settings_dict, out_folder, pg_engine):
             how="left",
         )
 
-        transmission_lines = tx_cost_transform(transmission_lines)
+        transmission_lines, trans_capital_cost_per_mw_km = tx_cost_transform(
+            transmission_lines
+        )
         transmission_lines["tz2_dbid"] = transmission_lines["dest_region"].map(
             zone_dict
         )
@@ -1304,7 +1301,6 @@ def transmission_tables(scen_settings_dict, out_folder, pg_engine):
         )
         transmission_lines["trans_dbid"] = range(1, len(transmission_lines) + 1)
         transmission_lines["trans_derating_factor"] = 0.95
-        trans_capital_cost_per_mw_km = transmission_lines["cost_per_mw-km"].min()
         transmission_lines["TRANSMISSION_LINE"] = (
             transmission_lines["tz1_dbid"].astype(str)
             + "-"
@@ -1457,7 +1453,8 @@ def scenario_files(in_folder, out_folder, settings):
 
 """
 # settings for testing
-settings_file = "MIP_results_comparison/case_settings/26-zone/settings"
+# settings_file = "MIP_results_comparison/case_settings/26-zone/settings"
+settings_file = "MIP_results_comparison/case_settings/26-zone/settings-atb2023"
 results_folder = "/tmp/pg_test"
 case_id = ["base_short"]
 year = [2030] # [2030, 2040, 2050]
@@ -1545,6 +1542,8 @@ def main(
     if scenario_definitions.empty:
         if case_id or year:
             extra = " matching the requested case_id(s) or year(s)"
+        else:
+            extra = ""
         print(f"WARNING: No scenarios{extra} were found in {scen_def_fn}.\n")
     else:
         missing = set(case_id).difference(set(scenario_definitions["case_id"]))

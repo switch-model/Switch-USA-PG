@@ -7,27 +7,14 @@ import os, sys, re, zipfile
 import gdown, yaml, powergenome
 
 
-def first_subdir(filename):
-    parts = filename.split("/")
-    return parts[0] if len(parts) > 1 else ""
-
-
-def zip_is_one_object(paths):
-    if not paths:
-        # empty zip file, treat as empty folder
-        return False
-    subdir = first_subdir(paths[0])
-    all_same_dir = all(first_subdir(f) == subdir for f in paths)
-    return all_same_dir
-
-
 def unzip(filename):
     print(f"unzipping {filename}")
     with zipfile.ZipFile(filename, "r") as zip_ref:
         # identify the files we want to extract (ignore metadata)
         names = [n for n in zip_ref.namelist() if not n.startswith("__MACOSX")]
-        if zip_is_one_object(names):
-            # expand in place
+        top_level_files = set(n.split("/")[0] for n in names)
+        if len(top_level_files) == 1:
+            # contains one file or one directory; expand in place
             dest = os.path.dirname(filename)
         else:
             # use zip file name as outer subdir
@@ -72,7 +59,7 @@ def main(filter=[]):
     for model, dest in settings["resource_groups"].items():
         abs_dest = os.path.abspath(dest)
         yml_file = os.path.join(
-            "MIP_results_comparison", "case_settings", model, "settings", "env.yml"
+            "MIP_results_comparison", "case_settings", model, "env.yml"
         )
         print(f"\ncreating {yml_file}")
         with open(yml_file, "w") as f:

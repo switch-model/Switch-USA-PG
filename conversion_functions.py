@@ -11,6 +11,8 @@ import math
 
 from powergenome.time_reduction import kmeans_time_clustering
 
+km_per_mile = 1.60934
+
 
 # convenience functions to get first/final keys/values from dicts
 # (e.g., first year in a dictionary organized by years)
@@ -209,9 +211,7 @@ def gen_info_table(
     ].sum(axis=1)
 
     # create gen_connect_cost_per_mw from spur_miles and spur_capex_mw_mile
-    gen_info["spur_capex_mw_mi"] = gen_info["region"].apply(
-        lambda x: spur_capex_mw_mile[x]
-    )
+    gen_info["spur_capex_mw_mi"] = gen_info["region"].map(spur_capex_mw_mile)
     gen_info["spur_miles"] = gen_info["spur_miles"].fillna(0)
     gen_info.loc[
         gen_info["gen_connect_cost_per_mw"] == 0, "gen_connect_cost_per_mw"
@@ -242,10 +242,10 @@ def gen_info_table(
     # identify generators that can retire early
     try:
         # settings for newer GenX
-        gen_info['gen_can_retire_early'] = gen_info['Can_Retire'].astype("Int64")
+        gen_info["gen_can_retire_early"] = gen_info["Can_Retire"].astype("Int64")
     except KeyError:
         # settings for older GenX
-        gen_info['gen_can_retire_early'] = (gen_info['New_Build'] >= 0).astype("Int64")
+        gen_info["gen_can_retire_early"] = (gen_info["New_Build"] >= 0).astype("Int64")
 
     # rename columns
     gen_info.rename(
@@ -1304,13 +1304,6 @@ def load_zones_table(IPM_regions, zone_ccs_distance_km):
     return load_zones
 
 
-def region_avg(tx_capex_mw_mile_dict, region1, region2):
-    r1_value = tx_capex_mw_mile_dict[region1]
-    r2_value = tx_capex_mw_mile_dict[region2]
-    r_avg = mean([r1_value, r2_value])
-    return r_avg
-
-
 def create_transm_line_col(lz1, lz2, zone_dict):
     t_line = zone_dict[lz1] + "-" + zone_dict[lz2]
     return t_line
@@ -1325,7 +1318,7 @@ def transmission_lines_table(
         TRANSMISSION_LINE: zone_dbid-zone_dbid for trans_lz1 and lz2
         trans_lz1: split PG transmission_path_name
         trans_lz2: split PG transmission_path_name
-        trans_length_km: PG distance_mile * need to convert to km (*1.60934)
+        trans_length_km: PG distance_mile * km_per_mile
         trans_efficiency: PG line_loss_percentage (1 - line_loss_percentage)
         existing_trans_cap: PG line_max_cap_flow. Take absolute value and take max of the two values
         trans_dbid: id number
@@ -1351,9 +1344,7 @@ def transmission_lines_table(
     transmission_df = transmission_df.join(split_path_name)
 
     # convert miles to km for trans_length_km
-    transmission_df["trans_length_km"] = transmission_df["distance_mile"].apply(
-        lambda x: x * 1.609
-    )
+    transmission_df["trans_length_km"] = transmission_df["distance_mile"] * km_per_mile
 
     # for trans_efficiency do 1 - line_loss_percentage
     transmission_df["trans_efficiency"] = transmission_df["Line_Loss_Percentage"].apply(
@@ -1399,19 +1390,24 @@ def transmission_lines_table(
         + "-"
         + transm_final["tz2_dbid"].astype(str)
     )
-    # trans_capital_cost_per_mw_km * trans_terrain_multiplier = average of trans_lz1 and trans_lz2
-    trans_capital_cost_per_mw_km = (
-        min(
-            settings.get("transmission_investment_cost")["tx"]["capex_mw_mile"].values()
+
+    # use average of transmission cost from the two zones and convert to cost per MW-km
+    transm_final["cap_cost_per_mw_km"] = (
+        0.5
+        * (
+            transm_final["trans_lz1"].map(tx_capex_mw_mile_dict)
+            + transm_final["trans_lz2"].map(tx_capex_mw_mile_dict)
         )
-        * 1.60934
+        / km_per_mile  # ($/mi) / (km/mi) = $/km
     )
-    transm_final["region_avgs"] = transm_final.apply(
-        lambda row: region_avg(tx_capex_mw_mile_dict, row.trans_lz1, row.trans_lz2),
-        axis=1,
-    )
-    transm_final["trans_terrain_multiplier"] = transm_final["region_avgs"].apply(
-        lambda x: x / trans_capital_cost_per_mw_km
+    # benchmark value for transmission capital cost; each line will end up with
+    # trans_capital_cost_per_mw_km * trans_terrain_multiplier = cap_cost_per_mw_km
+    trans_capital_cost_per_mw_km = transm_final["cap_cost_per_mw_km"].min()
+    if trans_capital_cost_per_mw_km == 0:
+        trans_capital_cost_per_mw_km = 1  # avoid division by zero below
+
+    transm_final["trans_terrain_multiplier"] = (
+        transm_final["cap_cost_per_mw_km"] / trans_capital_cost_per_mw_km
     )
 
     # set as 1 for now
@@ -1431,20 +1427,24 @@ def transmission_lines_table(
             "trans_new_build_allowed",
         ]
     ]
-    return transm_final
+    return transm_final, trans_capital_cost_per_mw_km
 
 
 def tx_cost_transform(tx_cost_df):
     tx_cost_df["cost_per_mw-km"] = (
         tx_cost_df["total_interconnect_cost_mw"] / tx_cost_df["total_mw-km_per_mw"]
     )
-    min_cost = tx_cost_df["cost_per_mw-km"].min()
-    tx_cost_df["trans_terrain_multiplier"] = tx_cost_df["cost_per_mw-km"] / min_cost
+    trans_capital_cost_per_mw_km = tx_cost_df["cost_per_mw-km"].min()
+    if trans_capital_cost_per_mw_km == 0:
+        trans_capital_cost_per_mw_km = 1  # avoid division by zero later
+    tx_cost_df["trans_terrain_multiplier"] = (
+        tx_cost_df["cost_per_mw-km"] / trans_capital_cost_per_mw_km
+    )
     tx_cost_df["trans_efficiency"] = 1 - tx_cost_df["total_line_loss_frac"]
     tx_cost_df["trans_length_km"] = tx_cost_df["total_mw-km_per_mw"]
     tx_cost_df["trans_new_build_allowed"] = 1
     tx_cost_df["existing_trans_cap"] = tx_cost_df["Line_Max_Flow_MW"]
-    return tx_cost_df
+    return tx_cost_df, trans_capital_cost_per_mw_km
 
 
 def balancing_areas(
