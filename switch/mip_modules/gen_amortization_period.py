@@ -38,8 +38,14 @@ def define_components(m):
             for bld_yr in m.BLD_YRS_FOR_GEN_PERIOD[g, p]
         ),
     )
-
-    m.Cost_Components_Per_Period.append("GenAmortizationAdjustment")
+    # Summarize costs for the objective function (total $/year).
+    m.TotalGenAmortizationAdjustment = Expression(
+        m.PERIODS,
+        rule=lambda m, p: sum(
+            m.GenAmortizationAdjustment[g, p] for g in m.GENERATION_PROJECTS
+        ),
+    )
+    m.Cost_Components_Per_Period.append("TotalGenAmortizationAdjustment")
 
 
 def load_inputs(mod, switch_data, inputs_dir):
