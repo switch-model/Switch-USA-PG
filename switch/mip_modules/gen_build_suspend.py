@@ -553,21 +553,27 @@ def define_components(mod):
 
     # Force permanent retirement (suspension must continue through all later
     # years), if early retirement is allowed but suspension is not
-    mod.Suspend_Retired_Gens = Constraint(
-        mod.GEN_BLD_SUSPEND_YRS,
-        rule=lambda m, g, bld_yr, sus_yr: (
-            (
-                m.SuspendGen[g, bld_yr, sus_yr]
-                <= m.SuspendGen[g, bld_yr, m.PERIOS.prev(sus_yr)]
-            )
-            if (
-                m.gen_can_retire_early[g]
-                and not m.gen_can_suspend[g]
-                and sus_yr != m.PERIODS.first()
-            )
-            else Constraint.Skip
-        ),
-    )
+    def rule(m, g, bld_yr, sus_yr):
+        if m.gen_can_retire_early[g] and not m.gen_can_suspend[g]:
+            # gen can retire, but not suspend
+            try:
+                # it's tricky to anticipate which combinations of g, bld_yr, and
+                # sus_yr could have been suspended in the prior period (e.g., a
+                # plant scheduled for construction in 2025 would be active in a
+                # 2021-2030 period when using early retirement, but not when
+                # using late retirement). So we just give it a try and catch
+                # errors if the previous period doesn't exist or wasn't a
+                # suspendable year.
+                return (
+                    m.SuspendGen[g, bld_yr, sus_yr]
+                    >= m.SuspendGen[g, bld_yr, m.PERIODS.prev(sus_yr)]
+                )
+            except (KeyError, IndexError):
+                # couldn't suspend in previous period (if it existed)
+                pass
+        return Constraint.Skip
+
+    mod.Suspend_Retired_Gens = Constraint(mod.GEN_BLD_SUSPEND_YRS, rule=rule)
 
     mod.GenCapacity = Expression(
         mod.GENERATION_PROJECTS,
