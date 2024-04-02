@@ -2,6 +2,28 @@ todo:
 
 (- means to do, + means done)
 
+- make sure balancing_areas() works with new generator tables
+
+- propagate ramp rate limits and minimum load from PG to switch input files (see notes below)
+
+- prevent creation of duplicate rows in the hydro tables and maybe others (these get one per generator model year; maybe generate from gen_info instead?)
+
+- chain retirement decisions between myopic model stages
+
+- update save_mip_results code to use final capacity from GenCapacity.csv or gen_cap.csv instead of calculating it internally (or at least take account of economic retirements and --retire early flag)
+
+- add code to pg_to_switch to auto-generate scenarios.txt (for all possible cases), depending on whether it is a pre-chain year, post-chain year, which transmission and co2 costs are used, whether retirement or ramp limits are enabled, etc.
+
+low-priority:
+
+- make dirs a more readable color in ls on hpc
+
+- setup hpc to share history right away between sessions
+
+- add code to powergenome.util.init_pudl_connection to give an error if the PG_DB file doesn't exist, instead of creating a new empty one
+
+
+
 + make sure switch can run with gen_build_predetermined after start of study (may cause problems in post solve); if not, drop any unusable gens in pg_to_switch
 
 + add retire_early and retire_late options to gen_build_suspend and set that in options.txt; will also need to add the gen_can_retire_early flag, so we can use this module full-time
@@ -24,24 +46,11 @@ todo:
 + get fixed O&M to show up for existing plants so there is money to save by retiring them
 + update transmission scenario definitions to all branch off base_short instead of using separate dirs for most
 
-- make sure balancing_areas() works with new generator tables
-
-- propagate ramp rate limits and minimum load from PG to switch input files (see notes below)
-
-- add code to pg_to_switch to auto-generate scenarios.txt (for all possible cases), depending on whether it is a pre-chain year, post-chain year, which transmission and co2 costs are used, whether retirement or ramp limits are enabled, etc.
-
 + setup .slurm scripts to run the scenarios as array jobs with different jobs
   for different years and dependencies between them
 
-- incorporate economic retirements and --retire early flag into reported capacity for MIP
-
-- make dirs a more readable color in ls on hpc
-- setup hpc to share history right away between sessions
-
 (later) grapple somehow with the fact that powergenome thinks it's setting up scenario dirs, but really it's data dirs, and then a scenario consists of a data dir plus some other settings
 (later) implement transmission-limit cases in pipeline (caps)
-
-- add code to powergenome.util.init_pudl_connection to give an error if the PG_DB file doesn't exist, instead of creating a new empty one
 
 generate case data: base_short, base_short_current_policies, base_short_no_ccs
 
