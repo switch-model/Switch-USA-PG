@@ -404,6 +404,7 @@ def operational_files(
                 timepoints_df,
                 flow_per_mw=1.02,
             )
+        TODO: merge duplicates across these files
         output["water_nodes.csv"].append(water_nodes)
         output["water_connections.csv"].append(water_connections)
         output["reservoirs.csv"].append(reservoirs)
@@ -759,12 +760,11 @@ def gen_tables(gc, pudl_engine, scen_settings_dict):
         # units online in this model_year for each gen cluster
         eia_unit_info = eia_build_info(gc)
         unit_df = gen_df.merge(eia_unit_info, on="Resource", how="left")
-        # drop units that don't survive to this model year (PowerGenome does
-        # this to gc.units_model before clustering (I think), but eia_build_info
-        # uses gc.all_units, which still includes units that have aged out.)
-        # Note: PG uses a standard that retirement_year must be > model_year
-        # (not >= ) to be available, so we stick with that.
-        unit_df = unit_df.query("retirement_year > model_year")
+
+        # Set same info as eia_build_info() for generic generators (Resources in
+        # the "existing" list that didn't get matching record(s) from the
+        # eia_unit_info, currently only distributed generation).
+        unit_df = add_generic_gen_build_info(unit_df, year_settings)
 
         unit_dfs.append(unit_df)
 
@@ -772,15 +772,6 @@ def gen_tables(gc, pudl_engine, scen_settings_dict):
 
     gens_by_model_year = pd.concat(gen_dfs, ignore_index=True)
     units_by_model_year = pd.concat(unit_dfs, ignore_index=True)
-
-    # Update generic generators (Resources in the "existing" list that didn't
-    # get matching record(s) from the eia_unit_info, currently only distributed
-    # generation). This is done after combining across model years, so we could
-    # potentially infer the amount built in each year from the change in
-    # capacity between model years.
-    units_by_model_year = add_generic_gen_build_info(
-        units_by_model_year, scen_settings_dict
-    )
 
     assert (
         units_by_model_year.query("existing")["build_year"].notna().all()
@@ -794,13 +785,15 @@ def gen_tables(gc, pudl_engine, scen_settings_dict):
     # capacity_mw for a single unit can change between model years due to
     # derating by the cluster average capacity factor, since the cluster makeup
     # changes over time; fixed O&M rises over time for some plants)
+    numeric_cols = unit_df.select_dtypes(include="number").columns.drop("build_year")
     dup_rules = {
-        c: "mean" if c in unit_df.select_dtypes(include="number").columns else "first"
-        for c in units_by_model_year.columns
+        c: "mean" if c in numeric_cols else "first" for c in units_by_model_year.columns
     }
     unit_info = units_by_model_year.groupby(
         ["Resource", "plant_gen_id", "build_year"], as_index=False
     ).agg(dup_rules)
+    # average model_year is not meaningful
+    unit_info = unit_info.drop(columns=["model_year"])
 
     # aggregate by build_year
     # this could in theory be done with groupby()[columns].sum(), but then
@@ -860,10 +853,10 @@ def gen_tables(gc, pudl_engine, scen_settings_dict):
 def set_retirement_age(df, settings):
     # set retirement age (500 years if not specified) This uses the same logic
     # as powergenome.generators.label_retirement_year(), which doesn't seem to
-    # get called for a lot of the generators we aer using.
-    # Note: for some reason, in the economic retirement cases, retirement_ages
-    # comes back as None instead of a missing entry or empty dict, so we work
-    # around that
+    # get called for a lot of the generators we are using.
+    # Note: In the economic retirement cases, retirement_ages is set as ~ in the
+    # .yml files, which comes back as None instead of a missing entry or empty
+    # dict, so we work around that
     retirement_ages = settings.get("retirement_ages") or {}
     df["retirement_age"] = df["technology"].map(retirement_ages).fillna(500)
     return df
@@ -871,9 +864,8 @@ def set_retirement_age(df, settings):
 
 def eia_build_info(gc: GeneratorClusters):
     """
-    Return a dataframe showing Resource, plant_gen_id, build_year,
-    retirement_year, planned_retirement_year (if any), capacity_mw and
-    capacity_mwh for all EIA generating units that were aggregated for the
+    Return a dataframe showing Resource, plant_gen_id, build_year, capacity_mw
+    and capacity_mwh for all EIA generating units that were aggregated for the
     previous call to gc.create_all_generators().
 
     Note: capacity_mw will be de-rated according to the unit's average capacity
@@ -916,9 +908,6 @@ def eia_build_info(gc: GeneratorClusters):
         "Int64"
     )
 
-    # create a planned_retirement_year column so we can respect that if needed
-    units["planned_retirement_year"] = units["planned_retirement_date"].dt.year
-
     # make sure "capacity_mw" comes from the right column
     capacity_col = gc.settings.get("capacity_col", "capacity_mw")
     units["capacity_mw"] = units[capacity_col]
@@ -928,8 +917,6 @@ def eia_build_info(gc: GeneratorClusters):
             "Resource",
             "plant_gen_id",
             "build_year",
-            "retirement_year",
-            "planned_retirement_year",
             "capacity_mw",
             "capacity_mwh",
         ]
@@ -1456,7 +1443,8 @@ def scenario_files(in_folder, out_folder, settings):
 # settings_file = "MIP_results_comparison/case_settings/26-zone/settings"
 settings_file = "MIP_results_comparison/case_settings/26-zone/settings-atb2023"
 results_folder = "/tmp/pg_test"
-case_id = ["base_short"]
+# case_id = ["base_short"]
+case_id = ["base"]
 year = [2030] # [2030, 2040, 2050]
 myopic = False
 """

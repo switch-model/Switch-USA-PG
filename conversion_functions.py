@@ -120,13 +120,12 @@ def plant_gen_id(df):
     return df
 
 
-def add_generic_gen_build_info(units_by_model_year, scen_settings_dict):
+def add_generic_gen_build_info(units, settings):
     """
-    Return a dataframe showing Resource, model_year and synthetic build_year,
-    capacity_mw and capacity_mwh values for generic existing generators. These
-    are generators where PowerGenome reported Existing_Cap_MW and/or
-    Existing_Cap_MWh for one or more model years, but no plant_id_eia, so we
-    couldn't look up unit-level construction info with eia_build_info().
+    Update units dataframe with synthetic plant_gen_id, build_year, capacity_mw
+    and capacity_mwh for generic existing generators. These are generators that
+    PowerGenome reported as existing but didn't get unit-level construction info
+    from eia_build_info(), e.g., distributed generation.
     """
     # Distributed generation and a few others are in the "existing" list with
     # non-zero Existing_Cap_MW, but no plant_id_eia and therefore no build_year
@@ -150,16 +149,15 @@ def add_generic_gen_build_info(units_by_model_year, scen_settings_dict):
     # year. That way they will persist through the study (if long-lived) and
     # the build_year will be consistent across multiple stages of myopic models.
 
-    all_units = units_by_model_year.copy()
-    generic = all_units["existing"] & all_units["build_year"].isna()
+    generic = units["existing"] & units["build_year"].isna()
 
     # TODO: retrieve this year from PowerGenome
-    all_units.loc[generic, "build_year"] = 2022
-    all_units.loc[generic, "plant_gen_id"] = "generic"
-    all_units.loc[generic, "capacity_mw"] = all_units.loc[generic, "Existing_Cap_MW"]
-    all_units.loc[generic, "capacity_mwh"] = all_units.loc[generic, "Existing_Cap_MWh"]
+    units.loc[generic, "plant_gen_id"] = "generic"
+    units.loc[generic, "build_year"] = 2022
+    units.loc[generic, "capacity_mw"] = units.loc[generic, "Existing_Cap_MW"]
+    units.loc[generic, "capacity_mwh"] = units.loc[generic, "Existing_Cap_MWh"]
 
-    return all_units
+    return units
 
 
 def gen_info_table(
