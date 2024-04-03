@@ -14,6 +14,7 @@ usage: python compare_inputs.py old_dir new_dir
 import sys, tempfile, os, shutil, subprocess
 import pandas as pd, numpy as np
 
+
 def round(x, n_figs):
     """
     Round series or dataframe to specified number of significant figures;
@@ -23,6 +24,7 @@ def round(x, n_figs):
     power = 10 ** (np.floor(np.log10(np.abs(x).clip(1e-200))))
     rounded = np.round(x / power, n_figs - 1) * power
     return rounded
+
 
 with tempfile.TemporaryDirectory() as td:
     for out, orig in [("old", sys.argv[1]), ("new", sys.argv[2])]:
@@ -35,6 +37,10 @@ with tempfile.TemporaryDirectory() as td:
             for name in files:
                 old_file = os.path.join(root, name)
                 new_file = os.path.join(outdir, name)
+                # skip big files (10+ MB)
+                if os.stat(old_file).st_size > 1e7:
+                    print(f"skipping {old_file} (large)")
+                    continue
                 print(f"copying {old_file}")
                 if name.endswith(".csv"):
                     df = pd.read_csv(old_file, na_values=".")
@@ -57,7 +63,7 @@ with tempfile.TemporaryDirectory() as td:
                         # if (df[c] % 1 == 0).all():
                         #     df[c] = df[c].astype(int)
                         try:
-                            df[c] = df[c].astype("Int64") # can keep NaNs
+                            df[c] = df[c].astype("Int64")  # can keep NaNs
                         except TypeError:
                             # non-convertible, e.g., has non-int or inf values
                             pass

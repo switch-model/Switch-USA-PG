@@ -404,7 +404,6 @@ def operational_files(
                 timepoints_df,
                 flow_per_mw=1.02,
             )
-        TODO: merge duplicates across these files
         output["water_nodes.csv"].append(water_nodes)
         output["water_connections.csv"].append(water_connections)
         output["reservoirs.csv"].append(reservoirs)
@@ -461,9 +460,19 @@ def operational_files(
             )
         output["graph_timestamp_map.csv"].append(graph_timestamp_map)
 
-    # Write to CSV files
+    # drop_duplicates isn't enough for reservoirs.csv, because it may have
+    # different res_max_vol in different years (!)
+    output["reservoirs.csv"] = [
+        pd.concat(output["reservoirs.csv"])
+        .groupby("RESERVOIRS")
+        .agg({"res_min_vol": "min", "res_max_vol": "max"})
+        .reset_index()
+    ]
+
+    # Write to CSV files (remove any duplicate rows, e.g., based on the
+    # same generator reported in different model years)
     for file, dfs in output.items():
-        pd.concat(dfs).to_csv(out_folder / file, index=False)
+        pd.concat(dfs).drop_duplicates().to_csv(out_folder / file, index=False)
 
 
 def gen_build_costs_file(gens_by_build_year, out_folder):

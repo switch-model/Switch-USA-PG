@@ -151,9 +151,13 @@ def add_generic_gen_build_info(units, settings):
 
     generic = units["existing"] & units["build_year"].isna()
 
-    # TODO: retrieve this year from PowerGenome
     units.loc[generic, "plant_gen_id"] = "generic"
-    units.loc[generic, "build_year"] = 2022
+    # somewhat arbitrary, but should in the right range and stable across model
+    # years
+    units.loc[generic, "build_year"] = settings.get(
+        "eia_data_year",
+        settings.get("data_year", settings.get("atb_data_year", 2020)),
+    )
     units.loc[generic, "capacity_mw"] = units.loc[generic, "Existing_Cap_MW"]
     units.loc[generic, "capacity_mwh"] = units.loc[generic, "Existing_Cap_MWh"]
 

@@ -6,3 +6,6 @@
 # potentially useful for reporting
 --save-expression GenCapacity
 --solver gurobi --solver-options-string "method=2 crossover=0"
+# use GenX-style retirement (input files, e.g., variable_capacity_factors.csv,
+# assume this)
+--retire early
