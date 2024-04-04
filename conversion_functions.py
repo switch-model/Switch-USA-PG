@@ -241,6 +241,12 @@ def gen_info_table(
     # show up as buildable in the future anyway)
     gen_info["gen_capacity_limit_mw"] = gen_info["Max_Cap_MW"].replace({-1: None})
 
+    # fill in CCS capture rate, using NaN for non-CCS plants
+    gen_info["gen_ccs_capture_efficiency"] = gen_info["CO2_Capture_Rate"]
+    gen_info.loc[
+        gen_info["gen_ccs_capture_efficiency"] == 0, "gen_ccs_capture_efficiency"
+    ] = None
+
     # identify generators that can retire early
     try:
         # settings for newer GenX
