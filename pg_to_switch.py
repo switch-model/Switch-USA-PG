@@ -460,16 +460,19 @@ def operational_files(
             )
         output["graph_timestamp_map.csv"].append(graph_timestamp_map)
 
-    # drop_duplicates isn't enough for reservoirs.csv, because it may have
-    # different res_max_vol in different years (!)
-    output["reservoirs.csv"] = [
-        pd.concat(output["reservoirs.csv"])
-        .groupby("RESERVOIRS")
-        .agg({"res_min_vol": "min", "res_max_vol": "max"})
-        .reset_index()
-    ]
+    # drop_duplicates isn't enough for some files, because they may have
+    # different capacities calculated in different years (!)
+    aggregation_rules = {
+        "reservoirs.csv": {"res_min_vol": "min", "res_max_vol": "max"},
+        "water_connections.csv": {"wc_capacity": "max"},
+    }
+    for file, agg_rule in aggregation_rules.items():
+        df = pd.concat(output[file])
+        group_cols = df.columns.difference(agg_rule.keys())
+        df = df.groupby(group_cols.to_list()).agg(agg_rule).reset_index()
+        output[file] = [df]
 
-    # Write to CSV files (remove any duplicate rows, e.g., based on the
+    # Write to CSV files (remove any remaining duplicate rows, e.g., based on the
     # same generator reported in different model years)
     for file, dfs in output.items():
         pd.concat(dfs).drop_duplicates().to_csv(out_folder / file, index=False)
