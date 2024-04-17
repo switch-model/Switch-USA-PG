@@ -2,7 +2,7 @@
 This module requires minimizing pollution exposure subject to a limit on total
 expenditure.
 
-This module defines the following parameters and expression:
+This module defines the following parameters and expressions:
 
 """
 
@@ -84,8 +84,27 @@ def define_components(m):
 
 def define_dynamic_components(m):
     if not m.options.no_minimize_pollution_exposure:
+
         # budget limit
-        m.system_cost_limit = Param(within=Reals)
+        # directory from which to read total_cost.txt from previous model
+        m.system_cost_baseline_dir = Param(within=Any, default="")
+        # amount to scale previous cost by to get the budget limit
+        m.system_cost_multiplier = Param(within=Reals, default=1)
+        # amount to add to the previous cost to get the budget limit
+        m.system_cost_adder = Param(within=Reals, default=0)
+
+        def init(m):
+            if m.system_cost_multiplier == 0:
+                baseline_cost = 0
+            else:
+                with open(
+                    # have to wrap string parameters in value() for some reason
+                    os.path.join(value(m.system_cost_baseline_dir), "total_cost.txt")
+                ) as f:
+                    baseline_cost = float(f.read().strip())
+            return baseline_cost * m.system_cost_multiplier + m.system_cost_adder
+
+        m.system_cost_limit = Param(initialize=init)
 
         # enforce budget limit (on NPV basis) (not known until define_dynamic_components)
         m.Enforce_System_Cost_Limit = Constraint(
@@ -107,8 +126,8 @@ def load_inputs(m, switch_data, inputs_dir):
     """
     Import the budget cap and exposure data.
 
-    financials.csv
-        system_cost_limit
+    system_cost_limit.csv
+        system_cost_baseline_dir, system_cost_multiplier, system_cost_adder
 
     group_exposure_coefficients.csv
         GENERATION_PROJECT, PERIOD, EXPOSURE_GROUP, group_exposure_coefficient
@@ -116,8 +135,12 @@ def load_inputs(m, switch_data, inputs_dir):
 
     if not m.options.no_minimize_pollution_exposure:
         switch_data.load_aug(
-            filename=os.path.join(inputs_dir, "financials.csv"),
-            param=(m.system_cost_limit,),
+            filename=os.path.join(inputs_dir, "system_cost_limit.csv"),
+            param=(
+                m.system_cost_baseline_dir,
+                m.system_cost_multiplier,
+                m.system_cost_adder,
+            ),
         )
 
     switch_data.load_aug(
