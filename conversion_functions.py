@@ -185,7 +185,7 @@ def gen_info_table(
         * gen_is_variable: only solar and wind are true
         * gen_is_baseload: from PowerGenome
         * gen_full_load_heat_rate: based on Heat_Rate_MMBTU_per_MWh from all_gen
-        * gen_variable_om: based on var_om_cost_per_MWh from all_gen
+        * gen_variable_om: based on Var_OM_Cost_per_MWh_mean from all_gen
         * gen_connect_cost_per_mw: based on spur_capex_mw_mile * spur_miles plus substation cost
         * gen_dbid: same as generation_project
         * gen_scheduled_outage_rate: from PowerGenome
@@ -262,7 +262,7 @@ def gen_info_table(
             "region": "gen_load_zone",
             "retirement_age": "gen_max_age",
             "Heat_Rate_MMBTU_per_MWh": "gen_full_load_heat_rate",
-            "Var_OM_Cost_per_MWh": "gen_variable_om",
+            "Var_OM_Cost_per_MWh_mean": "gen_variable_om",
             # gen_amortization_period is optional and often not needed (Switch
             # will use gen_max_age by default). But we always report it in case
             # the settings use a longer retirement_age (or none) to prevent

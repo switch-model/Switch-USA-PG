@@ -487,7 +487,7 @@ def gen_build_costs_file(gens_by_build_year, out_folder):
         * GENERATION_PROJECT: Resourc
         * build_year: based off of the build years from gens_by_build_year
         * gen_overnight_cost: uses PG capex_mw and regional_cost_multiplier
-        * gen_fixed_om: uses PG Fixed_OM_Cost_per_MWyr for all generators
+        * gen_fixed_om: uses PG Fixed_OM_Cost_per_MWyr_mean for all generators
         * gen_storage_energy_overnight_cost: uses PG capex_mw and regional_cost_multiplier
         * gen_storage_energy_fixed_om: PG Fixed_OM_Cost_per_MWhyr for all generators
     """
@@ -495,7 +495,7 @@ def gen_build_costs_file(gens_by_build_year, out_folder):
         "GENERATION_PROJECT": "Resource",
         "BUILD_YEAR": "build_year",
         "gen_overnight_cost": "capex_mw * regional_cost_multiplier",
-        "gen_fixed_om": "Fixed_OM_Cost_per_MWyr",
+        "gen_fixed_om": "Fixed_OM_Cost_per_MWyr_mean",
         "gen_storage_energy_overnight_cost": "capex_mwh * regional_cost_multiplier",
         "gen_storage_energy_fixed_om": "Fixed_OM_Cost_per_MWhyr",
     }
@@ -621,6 +621,34 @@ def gen_info_file(
     gen_info = gen_info.drop(columns=ESR_col + min_cap_col)
 
     gen_info.to_csv(out_folder / "gen_info.csv", index=False, na_rep=".")
+
+    # save deviations from mean O&M cost in gen_om_by_period.csv to allow variation by study period.
+    om_cols = [
+        "Fixed_OM_Cost_per_MWyr",
+        "Var_OM_Cost_per_MWh",
+        "Fixed_OM_Cost_per_MWhyr",
+    ]
+    gen_om_by_period = gens_by_model_year[["Resource", "model_year"] + om_cols]
+    gen_om_by_period[om_cols] -= gens_by_model_year[
+        [c + "_mean" for c in om_cols]
+    ].values
+    # ignore tiny differences from the mean
+    gen_om_by_period[om_cols] = gen_om_by_period[om_cols].mask(
+        gen_om_by_period[om_cols].abs() <= 1e-9, 0
+    )
+    # drop zeros (not essential, but helpful for seeing only the ones with adjustments)
+    gen_om_by_period[om_cols] = gen_om_by_period[om_cols].replace({0: float("nan")})
+    gen_om_by_period = gen_om_by_period.dropna(subset=om_cols, how="all")
+    gen_om_by_period.columns = [
+        "GENERATION_PROJECT",
+        "PERIOD",
+        "gen_fixed_om_by_period",
+        "gen_variable_om_by_period",
+        "gen_storage_energy_fixed_om_by_period",
+    ]
+    gen_om_by_period.to_csv(
+        out_folder / "gen_om_by_period.csv", index=False, na_rep="."
+    )
 
     ################
     # ESR and min_cap programs
@@ -788,6 +816,22 @@ def gen_tables(gc, pudl_engine, scen_settings_dict):
     assert (
         units_by_model_year.query("existing")["build_year"].notna().all()
     ), "Some existing generating units have no build_year assigned."
+
+    # In PowerGenome, Fixed_OM_Cost_per_MWyr, Var_OM_Cost_per_MWh and Fixed_OM_Cost_per_MWhyr vary by
+    # model year, not build year. So we calculate averages across model years to
+    # use for all build years, but also leave the per-model-year values to use
+    # as an ancillary input. (The averages are Fixed_OM_Cost_per_MWyr_mean,
+    # Var_OM_Cost_per_MWh_mean and Fixed_OM_Cost_per_MWhyr_mean.)
+    for col in [
+        "Fixed_OM_Cost_per_MWyr",
+        "Var_OM_Cost_per_MWh",
+        "Fixed_OM_Cost_per_MWhyr",
+    ]:
+        mean = gens_by_model_year.groupby("Resource")[col].mean()
+        gens_by_model_year[col + "_mean"] = gens_by_model_year["Resource"].map(mean)
+        # gens_by_model_year[col + "_mean"] = (
+        #     gens_by_model_year.groupby("Resource")[col].transform(lambda x: x.mean()
+        # )
 
     # create by_build_year tables from these
 

@@ -26,6 +26,8 @@ mip_modules.carbon_policies_regional
 mip_modules.min_capacity_constraint
 mip_modules.rps_regional
 mip_modules.trans_path_expansion_limit
+mip_modules.gen_om_by_period
+mip_modules.storage_fixed_om
 # mip_modules.carbon_policies_hard
 # switch_model.policies.min_per_tech
 # switch_model.policies.wind_to_solar_ratio

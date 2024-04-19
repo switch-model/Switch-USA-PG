@@ -6,13 +6,13 @@ todo:
 
 - propagate ramp rate limits and minimum load from PG to switch input files (see notes below)
 
-- prevent creation of duplicate rows in the hydro tables and maybe others (these get one per generator model year; maybe generate from gen_info instead?)
-
-- chain retirement decisions between myopic model stages
-
 - update save_mip_results code to use final capacity from GenCapacity.csv or gen_cap.csv instead of calculating it internally (or at least take account of economic retirements and --retire early flag)
 
-- add code to pg_to_switch to auto-generate scenarios.txt (for all possible cases), depending on whether it is a pre-chain year, post-chain year, which transmission and co2 costs are used, whether retirement or ramp limits are enabled, etc.
+- resolve possible issues where build_year coincides with a model year (Switch may
+  treat these as being built at the start of the period or end or something, but
+  we need some treatment that will work across steps of myopic models)
+
+- add code to pg_to_switch (or write a separate script) to auto-generate scenarios.txt (for all possible cases), depending on whether it is a pre-chain year, post-chain year, which transmission and co2 costs are used, whether retirement or ramp limits are enabled, etc.
 
 low-priority:
 
@@ -22,7 +22,11 @@ low-priority:
 
 - add code to powergenome.util.init_pudl_connection to give an error if the PG_DB file doesn't exist, instead of creating a new empty one
 
+done:
 
++ chain retirement decisions between myopic model stages
+
++ prevent creation of duplicate rows in the hydro tables and maybe others (these get one per generator model year; maybe generate from gen_info instead?)
 
 + make sure switch can run with gen_build_predetermined after start of study (may cause problems in post solve); if not, drop any unusable gens in pg_to_switch
 
