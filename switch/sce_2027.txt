@@ -1,0 +1,6 @@
+#--scenario-name base_short --inputs-dir 26-zone/in/2027/base_short --outputs-dir 26-zone/out/2027/base_short --include-module mip_modules.prepare_next_stage
+#--scenario-name base_short_retire --inputs-dir 26-zone/in/2027/base_short_retire --outputs-dir 26-zone/out/2027/base_short_retire --include-module mip_modules.prepare_next_stage
+#--scenario-name base_52_week --inputs-dir 26-zone/in/2027/base_52_week --outputs-dir 26-zone/out/2027/base_52_week --include-module mip_modules.prepare_next_stage
+#--scenario-name base_52_week_retire --inputs-dir 26-zone/in/2027/base_52_week_retire --outputs-dir 26-zone/out/2027/base_52_week_retire --include-module mip_modules.prepare_next_stage
+--scenario-name base_short_current_policies --inputs-dir 26-zone/in/2027/base_short_current_policies --outputs-dir 26-zone/out/2027/base_short_current_policies --include-module mip_modules.prepare_next_stage
+--scenario-name base_short_current_policies_retire --inputs-dir 26-zone/in/2027/base_short_current_policies_retire --outputs-dir 26-zone/out/2027/base_short_current_policies_retire --include-module mip_modules.prepare_next_stage

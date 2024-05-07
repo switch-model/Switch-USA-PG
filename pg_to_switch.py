@@ -801,18 +801,35 @@ def gen_tables(gc, pudl_engine, scen_settings_dict):
         eia_unit_info = eia_build_info(gc)
         unit_df = gen_df.merge(eia_unit_info, on="Resource", how="left")
 
-        # Set same info as eia_build_info() for generic generators (Resources in
-        # the "existing" list that didn't get matching record(s) from the
-        # eia_unit_info, currently only distributed generation).
-        unit_df = add_generic_gen_build_info(unit_df, year_settings)
-
         unit_dfs.append(unit_df)
+
+    # Set same info as eia_build_info() for generic generators (Resources in
+    # the "existing" list that didn't get matching record(s) from the
+    # eia_unit_info, currently only distributed generation).
+    cb_df = add_generic_gen_build_info(
+        pd.concat(unit_dfs, ignore_index=True), scen_settings_dict
+    )
+
+    # 'add_generic_gen_build_info' function above add the 'capacity_mw' for
+    # distributed solar as the total available capacity at each model year, while SWITCH
+    # prefers to have the 'capacity_mw' loaded as the amount of capacity installation/addition at
+    # each 'build_year'.
+    dg_cap = pd.DataFrame(cb_df.loc[cb_df["technology"].str.contains("distri")])
+    dg_grouped = dg_cap.sort_values(
+        ["region", "technology", "cluster", "build_year"]
+    ).groupby(["region", "technology", "cluster"])
+    dg = pd.DataFrame()
+    for group, data in dg_grouped:
+        diff = list(data.sort_values(by=["build_year"])["capacity_mw"].diff())
+        diff[0] = data.iloc[0]["capacity_mw"]
+        data["capacity_mw"] = diff
+        dg = dg.append(data)
+    cb_df.loc[dg.index, "capacity_mw"] = dg["capacity_mw"]
 
     gc.settings = orig_gc_settings
 
     gens_by_model_year = pd.concat(gen_dfs, ignore_index=True)
-    units_by_model_year = pd.concat(unit_dfs, ignore_index=True)
-
+    units_by_model_year = cb_df.copy()
     assert (
         units_by_model_year.query("existing")["build_year"].notna().all()
     ), "Some existing generating units have no build_year assigned."
