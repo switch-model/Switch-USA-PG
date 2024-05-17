@@ -4,15 +4,15 @@ switch_model.financials
 switch_model.balancing.load_zones
 switch_model.balancing.unserved_load
 switch_model.energy_sources.properties
-mip_modules.gen_build_suspend
+switch_model.generators.build
 switch_model.generators.core.dispatch
 switch_model.reporting
 switch_model.generators.core.no_commit
 #switch_model.generators.core.commit.build
 # switch_model.generators.extensions.hydro_simple
 # switch_model.generators.extensions.hydro_system
-mip_modules.hydro_system
 switch_model.generators.extensions.storage
+switch_model.generators.extensions.hydro_system
 #switch_model.energy_sources.fuel_costs.markets
 switch_model.energy_sources.fuel_costs.simple
 switch_model.transmission.transport.build
@@ -27,7 +27,6 @@ mip_modules.min_capacity_constraint
 mip_modules.rps_regional
 mip_modules.trans_path_expansion_limit
 mip_modules.gen_om_by_period
-mip_modules.storage_fixed_om
 # mip_modules.carbon_policies_hard
 # switch_model.policies.min_per_tech
 # switch_model.policies.wind_to_solar_ratio
