@@ -4,15 +4,23 @@ todo:
 
 - make sure balancing_areas() works with new generator tables
 
-- propagate ramp rate limits and minimum load from PG to switch input files (see notes below)
-
-- update save_mip_results code to use final capacity from GenCapacity.csv or gen_cap.csv instead of calculating it internally (or at least take account of economic retirements and --retire early flag)
+- update save_mip_results code to use final capacity from GenCapacity.csv or
+  gen_cap.csv instead of calculating it internally (or at least take account of
+  economic retirements and --retire early flag)
 
 - resolve possible issues where build_year coincides with a model year (Switch may
   treat these as being built at the start of the period or end or something, but
   we need some treatment that will work across steps of myopic models)
 
-- add code to pg_to_switch (or write a separate script) to auto-generate scenarios.txt (for all possible cases), depending on whether it is a pre-chain year, post-chain year, which transmission and co2 costs are used, whether retirement or ramp limits are enabled, etc.
+- Best effort​ (all of the above)
+
+- Write a define_scenarios.py script to auto-generate scenarios.txt (for all
+  possible cases), depending on whether it is a pre-chain year, post-chain year,
+  which transmission and co2 costs are used, whether retirement or ramp limits
+  are enabled, etc. (maybe define these in switch_params.yaml somehow?)
+  - maybe: grapple somehow with the fact that powergenome thinks it's setting
+    up scenario dirs, but really it's data dirs, and then a scenario consists of a
+    data dir plus some other settings
 
 low-priority:
 
@@ -23,6 +31,8 @@ low-priority:
 - add code to powergenome.util.init_pudl_connection to give an error if the PG_DB file doesn't exist, instead of creating a new empty one
 
 done:
+
++ propagate ramp rate limits and minimum load from PG to switch input files (see notes below)
 
 + chain retirement decisions between myopic model stages
 
@@ -53,13 +63,13 @@ done:
 + setup .slurm scripts to run the scenarios as array jobs with different jobs
   for different years and dependencies between them
 
-(later) grapple somehow with the fact that powergenome thinks it's setting up scenario dirs, but really it's data dirs, and then a scenario consists of a data dir plus some other settings
-(later) implement transmission-limit cases in pipeline (caps)
++ eventually: more cases, e.g., longer strips of weeks and maybe tx/carbon cost cases)
 
-generate case data: base_short, base_short_current_policies, base_short_no_ccs
++ implement transmission-limit cases in pipeline (caps)
 
++ generate case data: base_short, base_short_current_policies, base_short_no_ccs
 
-create a module to limit transmission additions on each corridor to a specified amount
++ create a module to limit transmission additions on each corridor to a specified amount
 
 create a script to setup the alternative cases (alternative input files for base_short; flags in scenarios.txt):
 + base:
@@ -72,18 +82,11 @@ create a script to setup the alternative cases (alternative input files for base
 + Foresight with sample weeks​
 - save results in MIP_results_comparison
 
-- Unit commitment​ (ramp limits)
-  - update pg_switch.py (Ramp_Up_Percentage, Ramp_Dn_Percentage and maybe Min_Power returned by add_misc_gen_values)
-  - give these names and implement the percent ramp rules in a side module
++ Unit commitment​ (ramp limits)
+  + update pg_switch.py (Ramp_Up_Percentage, Ramp_Dn_Percentage and maybe Min_Power returned by add_misc_gen_values)
+  + give these names and implement the percent ramp rules in a side module
     gen_ramp_limits (should these be a percentage of capacity committed in previous
     timepoint or current timepoint?)
-
-
-- Best effort​ (all of the above)
-
-- eventually: use switch_params.py to define scenarios.txt somehow
-
-- eventually: more cases, e.g., longer strips of weeks and maybe tx/carbon cost cases)
 
 + run all the models
 
