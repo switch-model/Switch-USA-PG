@@ -4,17 +4,14 @@ from pyomo.environ import *
 
 def define_components(m):
     """ """
-    # Ramp_Up_Percentage, Ramp_Dn_Percentage
-
     # maximum fraction of committed capacity that can be ramped up or down per
-    # hour (weirdly, we treat all commitment or decommitment as happening
-    # instantaneously on the timepoint margin and allow )
+    # hour
 
     m.gen_ramp_limit_up = Param(
-        m.GENERATION_PROJECTS, within=PercentFraction, default=1
+        m.GENERATION_PROJECTS, within=NonNegativeReals, default=1
     )
     m.gen_ramp_limit_down = Param(
-        m.GENERATION_PROJECTS, within=PercentFraction, default=1
+        m.GENERATION_PROJECTS, within=NonNegativeReals, default=1
     )
 
     # TODO: make this deal more correctly with multi-hour timepoints
