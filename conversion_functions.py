@@ -157,9 +157,9 @@ def add_generic_gen_build_info(units, settings):
     # nature of the nature (ie, 'capacity_mw') of the specific data. One needs to confirm
     # the technology/data of these missing generic generators first.
     # For distributed solar / distributed generators, the raw data gives the capacity
-    # for the total available capacity at each 'model_year', hence 'model_year' gets
-    # used for 'build_year'.
-    units.loc[generic, "build_year"] = units.loc[generic, "model_year"]
+    # for the total available capacity at each 'model_year', we are setting the build year
+    # ahead of the "model_first_planning_year"
+    units.loc[generic, "build_year"] = settings.get("model_first_planning_year") - 1
     units.loc[generic, "capacity_mw"] = units.loc[generic, "Existing_Cap_MW"]
     units.loc[generic, "capacity_mwh"] = units.loc[generic, "Existing_Cap_MWh"]
 

@@ -800,16 +800,13 @@ def gen_tables(gc, pudl_engine, scen_settings_dict):
         # units online in this model_year for each gen cluster
         eia_unit_info = eia_build_info(gc)
         unit_df = gen_df.merge(eia_unit_info, on="Resource", how="left")
-
+        unit_df = add_generic_gen_build_info(unit_df, year_settings)
         unit_dfs.append(unit_df)
 
     # Set same info as eia_build_info() for generic generators (Resources in
     # the "existing" list that didn't get matching record(s) from the
     # eia_unit_info, currently only distributed generation).
-    cb_df = add_generic_gen_build_info(
-        pd.concat(unit_dfs, ignore_index=True), scen_settings_dict
-    )
-
+    cb_df = pd.concat(unit_dfs)
     # 'add_generic_gen_build_info' function above add the 'capacity_mw' for
     # distributed solar as the total available capacity at each model year, while SWITCH
     # prefers to have the 'capacity_mw' loaded as the amount of capacity installation/addition at
