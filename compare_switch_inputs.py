@@ -23,6 +23,9 @@ def round(x, n_figs):
     """
     power = 10 ** (np.floor(np.log10(np.abs(x).clip(1e-200))))
     rounded = np.round(x / power, n_figs - 1) * power
+    # also round numbers that are very close to zero to zero; useful when
+    # comparing effectively zero results in outputs files
+    rounded[rounded.abs() < 10**-n_figs] = 0
     return rounded
 
 
@@ -67,10 +70,11 @@ with tempfile.TemporaryDirectory() as td:
                         except TypeError:
                             # non-convertible, e.g., has non-int or inf values
                             pass
-                    # some of the original data are rounded to 10 digits
-                    # (maybe by processing with R?), so we standardize on that
+                    # some of the original input data are rounded to 10 digits
+                    # (maybe by processing with R?); output data may vary by
+                    # 1e-6 or so, so we round to that many digits of precision
                     floats = df.columns[df.dtypes == "float64"]
-                    df[floats] = round(df[floats], 10)
+                    df[floats] = round(df[floats], 5)
                     df.to_csv(new_file, index=False, na_rep=".")
                 else:
                     shutil.copy(old_file, new_file)

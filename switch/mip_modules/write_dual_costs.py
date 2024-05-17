@@ -10,7 +10,19 @@ import os, time
 from pyomo.environ import Set, Param, Expression, Constraint, Suffix, Var, value
 from pyomo.repn import generate_standard_repn
 
+from switch_model.reporting import write_table
+
 # from switch_model.balancing.demand_response.iterative import write_dual_costs
+
+
+def define_arguments(argparser):
+    argparser.add_argument(
+        "--write-all-duals",
+        action="store_true",
+        default=False,
+        help="Report duals for all constraints and bounds in dual_costs.csv, "
+        "not just those with non-zero total value.",
+    )
 
 
 def define_components(m):
@@ -43,7 +55,7 @@ def write_dual_costs(m):
     outfile = os.path.join(outputs_dir, "dual_costs.csv")
     dual_data = []
     start_time = time.time()
-    print("Writing {} ... ".format(outfile), end=" ")
+    print(f"Writing {outfile} ... ", end=" ")
 
     def add_dual(const, lbound, ubound, duals, prefix="", offset=0.0):
         if const in duals:
@@ -58,16 +70,16 @@ def write_dual_costs(m):
                 # Variable is unbounded; dual should be 0.0 or possibly a tiny non-zero value.
                 if not (-1e-5 < dual < 1e-5):
                     raise ValueError(
-                        "{} has no {} bound but has a non-zero dual value {}.".format(
-                            const.name, "lower" if dual > 0 else "upper", dual
-                        )
+                        f"{const.name} has no {'lower' if dual > 0 else 'upper'} "
+                        f"bound but has a non-zero dual value {dual}."
                     )
             else:
                 total_cost = dual * (bound + offset)
-                if total_cost != 0.0:
+                if total_cost != 0.0 or m.options.write_all_duals:
                     dual_data.append(
                         (
-                            prefix + const.name,
+                            prefix + const.parent_component().name,
+                            str(const.index()),
                             direction,
                             (bound + offset),
                             dual,
@@ -105,11 +117,20 @@ def write_dual_costs(m):
 
     dual_data.sort(key=lambda r: (not r[0].startswith("DR_Convex_"), r[3] >= 0) + r)
 
-    with open(outfile, "w") as f:
-        f.write(
-            ",".join(["constraint", "direction", "bound", "dual", "total_cost"]) + "\n"
-        )
-        f.writelines(",".join(map(str, r)) + "\n" for r in dual_data)
+    write_table(
+        m,
+        range(len(dual_data)),
+        output_file=outfile,
+        headings=("constraint", "index", "direction", "bound", "dual", "total_cost"),
+        values=lambda m, i: dual_data[i],
+    )
+
+    # with open(outfile, "w") as f:
+    #     f.write(
+    #         ",".join(["constraint", "direction", "bound", "dual", "total_cost"]) + "\n"
+    #     )
+    #     f.writelines(",".join(map(str, r)) + "\n" for r in dual_data)
+
     print("time taken: {dur:.2f}s".format(dur=time.time() - start_time))
 
 
