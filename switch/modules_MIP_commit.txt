@@ -9,6 +9,7 @@ switch_model.generators.core.dispatch
 switch_model.reporting
 switch_model.generators.core.commit.operate
 switch_model.generators.core.commit.fuel_use
+mip_modules.gen_ramp_limits
 switch_model.generators.extensions.storage
 switch_model.generators.extensions.hydro_system
 #switch_model.energy_sources.fuel_costs.markets
@@ -24,6 +25,7 @@ mip_modules.carbon_policies_regional
 mip_modules.min_capacity_constraint
 mip_modules.rps_regional
 mip_modules.trans_path_expansion_limit
+mip_modules.gen_om_by_period
 # mip_modules.carbon_policies_hard
 # switch_model.policies.min_per_tech
 # switch_model.policies.wind_to_solar_ratio

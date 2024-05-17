@@ -191,12 +191,18 @@ def gen_info_table(
         * gen_scheduled_outage_rate: from PowerGenome
         * gen_forced_outage_rate: from PowerGenome
         * gen_capacity_limit_mw: omitted for new thermal plants; upper limits on new renewables (MW total across all).
+        * gen_min_load_fraction: from PowerGenome
+        * gen_ramp_limit_up: from PowerGenome
+        * gen_ramp_limit_down: from PowerGenome
+        * gen_min_uptime: from PowerGenome
+        * gen_min_downtime: from PowerGenome
+        * gen_startup_om: from PowerGenome
         * gen_is_cogen: from PowerGenome
         * gen_storage_efficiency: from PowerGenome
         * gen_store_to_release_ratio: batteries use 1
         * gen_can_provide_cap_reserves: all 1s
-        * gen_min_build_capacity: 0
         * gen_self_discharge_rate, gen_storage_energy_to_power_ratio: blanks
+
     """
 
     gen_info = all_gens.copy().reset_index(drop=True)
@@ -229,7 +235,6 @@ def gen_info_table(
         gen_info["Eff_Up"] * gen_info["Eff_Down"]
     )
     gen_info.loc[storage_gens, "gen_store_to_release_ratio"] = 1
-    gen_info["gen_min_build_capacity"] = 0
     gen_info["gen_can_provide_cap_reserves"] = 1
 
     gen_info["gen_self_discharge_rate"] = None
@@ -268,6 +273,12 @@ def gen_info_table(
             # the settings use a longer retirement_age (or none) to prevent
             # age-based retirement.
             "cap_recovery_years": "gen_amortization_period",
+            "Min_Power": "gen_min_load_fraction",
+            "Ramp_Up_Percentage": "gen_ramp_limit_up",
+            "Ramp_Dn_Percentage": "gen_ramp_limit_down",
+            "Up_Time": "gen_min_uptime",
+            "Down_Time": "gen_min_downtime",
+            "Start_Cost_per_MW": "gen_startup_om",
         },
         inplace=True,
     )
@@ -294,7 +305,12 @@ def gen_info_table(
         "gen_scheduled_outage_rate",
         "gen_forced_outage_rate",
         "gen_capacity_limit_mw",
-        "gen_min_build_capacity",
+        "gen_min_load_fraction",
+        "gen_ramp_limit_up",
+        "gen_ramp_limit_down",
+        "gen_min_uptime",
+        "gen_min_downtime",
+        "gen_startup_om",
         "gen_is_cogen",
         "gen_storage_efficiency",
         "gen_store_to_release_ratio",
