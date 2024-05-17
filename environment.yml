@@ -1,7 +1,7 @@
 channels:
   - conda-forge
 dependencies:
-  - conda-forge::switch_model=2.0.7
+  - conda-forge::switch_model=2.0.9
   - conda-forge::gdown
   - conda-forge::seaborn
   - conda-forge::pyyaml

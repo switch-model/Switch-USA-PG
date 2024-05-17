@@ -1189,7 +1189,7 @@ def other_tables(
 
     # write switch version txt file
     with open(out_folder / "switch_inputs_version.txt", "w") as file:
-        file.write("2.0.7")
+        file.write("2.0.9")
 
 
 from powergenome.generators import load_ipm_shapefile
