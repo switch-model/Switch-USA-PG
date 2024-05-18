@@ -25,7 +25,7 @@ def post_solve(m, outdir):
     # model if needed.
 
     # how to choose the next year in the chain
-    next_year_dict = {2030: 2040, 2040: 2050}
+    next_year_dict = {2027: 2030, 2030: 2035, 2035: 2040, 2040: 2045, 2045: 2050}
 
     # we can tell which period we're dealing with by looking at m.PERIODS
     # or outdir, which should be be <root>/year/case
@@ -183,6 +183,13 @@ def post_solve(m, outdir):
     next_gen_info = read_csv(next_in_path, "gen_info.csv")
     predet = predet.merge(next_gen_info["GENERATION_PROJECT"])
 
+    # distributed solar(dg) are treated as existing generators in MIP study and it has
+    # a growing capacity in each period. For myopic, the capacity showed in
+    # build_gen_predetermined.csv are the TOTAL available capacity in current period.
+    # 'merge_build_data' function below would keep all the records since they are not
+    # duplicated (total capacity varies by period). We need to drop the record of dg from
+    # previous period before merging with next period's "gen_build_predetermined.csv".
+    predet = predet.loc[predet["GENERATION_PROJECT"].str.contains("distr") == False]
     # merge with any from the next model, to pickup predetermined construction
     # after this part of the study; when there are duplicates, keep the first
     # one (the dataframe) to propagate retirements forward
