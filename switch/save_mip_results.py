@@ -18,20 +18,26 @@ results_folder = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "MIP_results_comparison")
 )
 
-year_list = [2030, 2040, 2050]
+year_list = [2027, 2030, 2035, 2040, 2045, 2050]
 case_list = {
-    "base_short": "26z-short-base-200",
-    "base_short_co2_1000": "26z-short-base-1000",
-    "base_short_co2_50": "26z-short-base-50",
-    "base_short_current_policies": "26z-short-current-policies",
-    "base_short_no_ccs": "26z-short-no-ccs",
-    "base_short_retire": "26z-short-retire",
-    "base_short_tx_0": "26z-short-base-tx-0",
-    "base_short_tx_15": "26z-short-base-tx-15",
-    "base_short_tx_50": "26z-short-base-tx-50",
-    "base_short_tx_100": "26z-short-base-tx-100",
-    "base_short_tx_200": "26z-short-base-tx-200",
-    "base_short_commit": "26z-short-commit",
+    # "base_short": "26z-short-base-200",
+    # "base_short_co2_1000": "26z-short-base-1000",
+    # "base_short_co2_50": "26z-short-base-50",
+    # "base_short_current_policies": "26z-short-current-policies",
+    # "base_short_no_ccs": "26z-short-no-ccs",
+    # "base_short_retire": "26z-short-retire",
+    # "base_short_tx_0": "26z-short-base-tx-0",
+    # "base_short_tx_15": "26z-short-base-tx-15",
+    # "base_short_tx_50": "26z-short-base-tx-50",
+    # "base_short_tx_100": "26z-short-base-tx-100",
+    # "base_short_tx_200": "26z-short-base-tx-200",
+    # "base_short_commit": "26z-short-commit",
+    # "base_short_retire": "short-base-200-retire",
+    # "base_short": "short-base-200",
+    # "base_52_week_retire": "full-base-200-retire",
+    # "base_52_week": "full-base-200",
+    "base_short_current_policies": "short-current-policies",
+    "base_short_current_policies_retire": "short-current-policies-retire",
 }
 
 # TODO:
@@ -141,8 +147,8 @@ def tech_type(gen_proj):
 
 print("\ncreating resource_capacity.csv")
 for i in case_list:
-    if skip_case(i):
-        continue
+    # if skip_case(i):
+    #     continue
 
     build_dfs = [
         pd.DataFrame(
@@ -171,68 +177,27 @@ for i in case_list:
             columns={"INVESTMENT_PERIOD": "planning_year"}
         )
 
-        # get the construction plan (all years up through this model, but some
-        # capacity may have retired before the model started)
-        build_mw = pd.read_csv(output_file(i, y, "BuildGen.csv")).rename(
-            columns={
-                "GEN_BLD_YRS_1": "resource_name",
-                "GEN_BLD_YRS_2": "build_year",
-                "BuildGen": "build_mw",
-            }
+        # get retirement age from gen_info.csv
+        gen_info = pd.read_csv(input_file(i, y, "gen_info.csv"))[
+            ["GENERATION_PROJECT", "gen_max_age"]
+        ]
+        # The 'input_file' function would keep track of the 'chained' files if applicable.
+        gen_pre = pd.read_csv(input_file(i, y, "gen_build_predetermined.csv")).merge(
+            gen_info, how="left"
         )
-        build_mwh = pd.read_csv(output_file(i, y, "BuildStorageEnergy.csv")).rename(
-            columns={
-                "STORAGE_GEN_BLD_YRS_1": "resource_name",
-                "STORAGE_GEN_BLD_YRS_2": "build_year",
-                "BuildStorageEnergy": "build_mwh",
-            }
-        )
-        build = build_mw.merge(build_mwh, how="outer")
+        gen_pre["retire_year"] = gen_pre["build_year"] + gen_pre["gen_max_age"]
 
         # cross-reference with the period information for this model
-        build = (
-            build.assign(__x=1)
+        gen_pre = (
+            gen_pre.assign(__x=1)
             .merge(periods.assign(__x=1), on="__x")
             .drop(columns=["__x"])
         )
-
-        # add suspension/retirement info if available
-        # TODO: avoid the retirement calculations by adding --save-expression
-        # GenCapacity when solving, then read GenCapacity.csv, or alternatively,
-        # pull info from gen_cap.csv instead of working from GenBuild.csv (which
-        # includes the obsolete generators).
-        susp_file = output_file(i, y, "SuspendGen.csv")
-        if os.path.exists(susp_file):
-            # get endogenous retirements (suspensions)
-            suspend_mw = pd.read_csv(susp_file).rename(
-                columns={
-                    "GEN_BLD_SUSPEND_YRS_1": "resource_name",
-                    "GEN_BLD_SUSPEND_YRS_2": "build_year",
-                    "GEN_BLD_SUSPEND_YRS_3": "planning_year",
-                    "SuspendGen": "suspend_mw",
-                }
-            )
-            build = build.merge(
-                suspend_mw, on=["resource_name", "build_year", "planning_year"]
-            )
-            missing = build[build["suspend_mw"].isna()]
-            if not missing.empty:
-                print(
-                    f"WARNING: unexpected missing SuspendGen values found in case {i} in year {y}:"
-                )
-                print(missing)
-                build["suspend_mw"] = build["suspend_mw"].fillna(0)
-        else:
-            # no suspension file
-            build["suspend_mw"] = 0
-
-        # get retirement age from gen_info.csv
-        gen_info = pd.read_csv(input_file(i, y, "gen_info.csv")).set_index(
-            "GENERATION_PROJECT"
-        )
-        build["retire_year"] = build["build_year"] + build["resource_name"].map(
-            gen_info["gen_max_age"]
-        )
+        # replace '.' with 0 for sum later.
+        gen_pre.loc[
+            gen_pre["build_gen_energy_predetermined"] == ".",
+            "build_gen_energy_predetermined",
+        ] = 0
 
         # find amount of capacity online before and after each period
         # (note: with retirement, "before" becomes ill-defined in myopic models,
@@ -242,34 +207,46 @@ for i in case_list:
         # this model, possibly including capacity that retired just as this
         # model started.
         cap_start = (
-            build.query(
+            gen_pre.query(
                 "(build_year < period_start) & (retire_year > period_start - 1)"
             )
-            .groupby(["resource_name", "planning_year"], as_index=False)[
-                ["build_mw", "build_mwh"]
-            ]
-            .sum()
-        ).rename(columns={"build_mw": "start_value", "build_mwh": "start_MWh"})
+            .groupby(["GENERATION_PROJECT", "planning_year"], as_index=False)
+            .agg(
+                {
+                    "build_gen_predetermined": "sum",
+                    "build_gen_energy_predetermined": "sum",
+                }
+            )
+        ).rename(
+            columns={
+                "GENERATION_PROJECT": "resource_name",
+                "build_gen_predetermined": "start_value",
+                "build_gen_energy_predetermined": "start_MWh",
+            }
+        )
         # assume anything that made it _past_ the start of this period is still
         # there at the end, since that is what Switch does and it captures the
         # notion of "what's running in this period" (if capacity is online one
         # period and retired by the next period, it is treated as retired in the
         # second period)
-        cap_end = (
-            build.query("(build_year <= period_end) & (retire_year > period_start)")
-            # subtract suspensions/retirements from the capacity that would
-            # otherwise be online through this study period (shows as not online
-            # at end)
-            .assign(build_mw=lambda df: df["build_mw"] - df["suspend_mw"])
-            .groupby(["resource_name", "planning_year"], as_index=False)[
-                ["build_mw", "build_mwh"]
-            ]
-            .sum()
-        ).rename(columns={"build_mw": "end_value", "build_mwh": "end_MWh"})
+        cap_end = pd.read_csv(output_file(i, y, "gen_cap.csv")).rename(
+            columns={
+                "GENERATION_PROJECT": "resource_name",
+                "PERIOD": "planning_year",
+                "GenCapacity": "end_value",
+                "GenStorageCapacity": "end_MWh",
+            }
+        )[["resource_name", "planning_year", "end_value", "end_MWh"]]
 
         # need an outer join to get any that didn't exist at the start (new
         # build) or end (retired during study)
         build_sum = cap_start.merge(cap_end, how="outer").fillna(0)
+        # drop resources have zero capacity at the start and end
+        # these are caused because they are reported in gen_cap.csv
+        # may want to stop reporting them in switch solve.
+        build_sum = build_sum.loc[
+            (build_sum["start_value"] != 0) | (build_sum["end_value"] != 0)
+        ]
         # add other columns needed for the report
         build_sum["zone"] = build_sum["resource_name"].map(gen_info["gen_load_zone"])
         build_sum["tech_type"] = tech_type(build_sum["resource_name"])
