@@ -11,7 +11,7 @@ from transmission_scripts.TX_util import tp_to_date
 # long as they are in the expected structure (26-zone/in/year/case and 26-zone/out/year/case)
 
 ################################### FOR 26 ZONE ###################################
-root_folder = ""
+root_folder = os.path.dirname(__file__)
 
 # results folder should be one level up from this script
 results_folder = os.path.abspath(
@@ -147,8 +147,8 @@ def tech_type(gen_proj):
 
 print("\ncreating resource_capacity.csv")
 for i in case_list:
-    # if skip_case(i):
-    #     continue
+    if skip_case(i):
+        continue
 
     build_dfs = [
         pd.DataFrame(
@@ -179,7 +179,7 @@ for i in case_list:
 
         # get retirement age from gen_info.csv
         gen_info = pd.read_csv(input_file(i, y, "gen_info.csv"))[
-            ["GENERATION_PROJECT", "gen_max_age"]
+            ["GENERATION_PROJECT", "gen_max_age", "gen_load_zone"]
         ]
         # The 'input_file' function would keep track of the 'chained' files if applicable.
         gen_pre = pd.read_csv(input_file(i, y, "gen_build_predetermined.csv")).merge(
@@ -198,7 +198,9 @@ for i in case_list:
             gen_pre["build_gen_energy_predetermined"] == ".",
             "build_gen_energy_predetermined",
         ] = 0
-
+        gen_pre["build_gen_energy_predetermined"] = (
+            gen_pre["build_gen_energy_predetermined"].fillna(0).astype(float)
+        )
         # find amount of capacity online before and after each period
         # (note: with retirement, "before" becomes ill-defined in myopic models,
         # because we don't know how much was suspended in the previous period,
@@ -248,7 +250,9 @@ for i in case_list:
             (build_sum["start_value"] != 0) | (build_sum["end_value"] != 0)
         ]
         # add other columns needed for the report
-        build_sum["zone"] = build_sum["resource_name"].map(gen_info["gen_load_zone"])
+        build_sum["zone"] = build_sum["resource_name"].map(
+            gen_info.set_index("GENERATION_PROJECT")["gen_load_zone"]
+        )
         build_sum["tech_type"] = tech_type(build_sum["resource_name"])
         build_sum["model"] = "SWITCH"
         build_sum["planning_year"] = y
@@ -274,6 +278,10 @@ for i in case_list:
     # )
 
     # drop empty rows
+    resource_capacity_agg.loc[resource_capacity_agg["end_MWh"] == "."] = 0
+    resource_capacity_agg["end_MWh"] = (
+        resource_capacity_agg["end_MWh"].fillna(0).astype(float)
+    )
     resource_capacity_agg = resource_capacity_agg.loc[
         (resource_capacity_agg["end_value"] > 0)
         | (resource_capacity_agg["end_MWh"] > 0)
