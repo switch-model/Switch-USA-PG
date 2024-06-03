@@ -34,10 +34,18 @@ case_list = {
     # "base_short_commit": "26z-short-commit",
     # "base_short_retire": "short-base-200-retire",
     # "base_short": "short-base-200",
-    # "base_52_week_retire": "full-base-200-retire",
-    # "base_52_week": "full-base-200",
-    "base_short_current_policies": "short-current-policies",
-    "base_short_current_policies_retire": "short-current-policies-retire",
+    # "base_short_current_policies": "short-current-policies",
+    # "base_short_current_policies_retire": "short-current-policies-retire",
+    "base_52_week": "full-base-200",
+    "base_52_week_retire": "full-base-200-retire",
+    "base_52_week_no_ccs": "full-base-200-no-ccs",
+    "base_52_week_tx_0": "full-base-200-tx-0",
+    "base_52_week_tx_15": "full-base-200-tx-15",
+    "base_52_week_tx_50": "full-base-200-tx-50",
+    #"base_short_commit":
+    "base_52_week_commit":"full-base-200-commit"
+    #"current_policies_52_week_high_ccs": "full-current-policies",
+    #"current_policies_52_week_retire_high_ccs": "full-current-policies_retire"
 }
 
 # TODO:
@@ -147,8 +155,8 @@ def tech_type(gen_proj):
 
 print("\ncreating resource_capacity.csv")
 for i in case_list:
-    # if skip_case(i):
-    #     continue
+    if skip_case(i):
+        continue
 
     build_dfs = [
         pd.DataFrame(
@@ -179,7 +187,7 @@ for i in case_list:
 
         # get retirement age from gen_info.csv
         gen_info = pd.read_csv(input_file(i, y, "gen_info.csv"))[
-            ["GENERATION_PROJECT", "gen_max_age"]
+            ["GENERATION_PROJECT", "gen_max_age", "gen_load_zone"]
         ]
         # The 'input_file' function would keep track of the 'chained' files if applicable.
         gen_pre = pd.read_csv(input_file(i, y, "gen_build_predetermined.csv")).merge(
@@ -198,7 +206,9 @@ for i in case_list:
             gen_pre["build_gen_energy_predetermined"] == ".",
             "build_gen_energy_predetermined",
         ] = 0
-
+        gen_pre["build_gen_energy_predetermined"] = (
+            gen_pre["build_gen_energy_predetermined"].fillna(0).astype(float)
+        )
         # find amount of capacity online before and after each period
         # (note: with retirement, "before" becomes ill-defined in myopic models,
         # because we don't know how much was suspended in the previous period,
@@ -248,7 +258,9 @@ for i in case_list:
             (build_sum["start_value"] != 0) | (build_sum["end_value"] != 0)
         ]
         # add other columns needed for the report
-        build_sum["zone"] = build_sum["resource_name"].map(gen_info["gen_load_zone"])
+        build_sum["zone"] = build_sum["resource_name"].map(
+            gen_info.set_index("GENERATION_PROJECT")["gen_load_zone"]
+        )
         build_sum["tech_type"] = tech_type(build_sum["resource_name"])
         build_sum["model"] = "SWITCH"
         build_sum["planning_year"] = y
@@ -274,6 +286,10 @@ for i in case_list:
     # )
 
     # drop empty rows
+    resource_capacity_agg.loc[resource_capacity_agg["end_MWh"] == "."] = 0
+    resource_capacity_agg["end_MWh"] = (
+        resource_capacity_agg["end_MWh"].fillna(0).astype(float)
+    )
     resource_capacity_agg = resource_capacity_agg.loc[
         (resource_capacity_agg["end_value"] > 0)
         | (resource_capacity_agg["end_MWh"] > 0)
