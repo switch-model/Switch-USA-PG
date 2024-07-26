@@ -1,11 +1,28 @@
 --verbose --stream-solver
 --inputs-dir 26-zone/in/2030/base_short
 --module-list modules_MIP.txt
---retire late
+# use GenX-style retirement (input files, e.g., variable_capacity_factors.csv,
+# assume this)
+--retire early
 # potentially useful for reporting
 --save-expression GenCapacity
 # --solver cplex --solver-options-string "lpmethod=4 solutiontype=2 emphasis_memory=yes"
 --solver gurobi --solver-options-string "method=2 crossover=0"
-# use GenX-style retirement (input files, e.g., variable_capacity_factors.csv,
-# assume this)
---retire early
+# --solver coptampl --solver-options-string "lp:method=2 lp:crossover=0 tech:outlev=1"
+# --solver appsi_highs --solver-options-string "solver=ipm parallel=on run_crossover=off threads=10"
+# Mosek args are from objects defined in mosek module, e.g., mosek.optimizertype.intpnt
+# also see
+# https://docs.mosek.com/latest/capi/solver-parameters.html
+# https://docs.mosek.com/10.2/faq.pdf
+# --solver mosek --solver-options-string "iparam.optimizer=optimizertype.intpnt iparam.intpnt_basis=basindtype.never"
+# MindOpt is from Alibaba -- has unlimited free use but only 1 (or maybe 8) at a time
+# https://help.aliyun.com/zh/optimization-solver/developer-reference/download-and-install-the-latest-optimization-solver-sdk
+# https://help.aliyun.com/zh/optimization-solver/getting-started/activate-and-use-the-service
+# https://opt.console.alibabacloud.com/ # optimization console
+# https://home-intl.console.aliyun.com/  # overall console?
+# MindOpt setup is tricky: have to
+# create an account, activate optimization services, authorize a payment method, purchase the zero-cost one,
+# create a user to use MindOpt (needs full access), generate fl_client.ini, copy user's access key id and secret into fl_client.ini,
+# place fl_client.ini in ~/mindopt (not necessary to update ~/.mdo_profile to point to it here)
+# flag names can be found from `mindoptampl -=` and flag options can be found at https://opt.aliyun.com/doc/latest/en/html/API2/param/index.html
+# --solver mindoptampl --solver-options-string "method=2 solution_target=1"
