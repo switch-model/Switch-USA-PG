@@ -34,10 +34,18 @@ case_list = {
     # "base_short_commit": "26z-short-commit",
     # "base_short_retire": "short-base-200-retire",
     # "base_short": "short-base-200",
-    # "base_52_week_retire": "full-base-200-retire",
-    # "base_52_week": "full-base-200",
-    "base_short_current_policies": "short-current-policies",
-    "base_short_current_policies_retire": "short-current-policies-retire",
+    # "base_short_current_policies": "short-current-policies",
+    # "base_short_current_policies_retire": "short-current-policies-retire",
+    "base_52_week": "full-base-200",
+    "base_52_week_retire": "full-base-200-retire",
+    "base_52_week_no_ccs": "full-base-200-no-ccs",
+    "base_52_week_tx_0": "full-base-200-tx-0",
+    "base_52_week_tx_15": "full-base-200-tx-15",
+    "base_52_week_tx_50": "full-base-200-tx-50",
+    #"base_short_commit":
+    "base_52_week_commit":"full-base-200-commit"
+    #"current_policies_52_week_high_ccs": "full-current-policies",
+    #"current_policies_52_week_retire_high_ccs": "full-current-policies_retire"
 }
 
 # TODO:
