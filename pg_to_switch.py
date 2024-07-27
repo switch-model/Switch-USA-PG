@@ -821,8 +821,11 @@ def gen_tables(gc, pudl_engine, scen_settings_dict):
         diff[0] = data.iloc[0]["capacity_mw"]
         data["capacity_mw"] = diff
         dg = dg.append(data)
-    cb_df.loc[dg.index, "capacity_mw"] = dg["capacity_mw"]
 
+    dg = dg.set_index(["model_year"], append=True)
+    cb_df = cb_df.set_index(["model_year"], append=True)
+    cb_df.loc[dg.index, "capacity_mw"] = dg["capacity_mw"]
+    cb_df = cb_df.reset_index(level=["model_year"])
     gc.settings = orig_gc_settings
 
     gens_by_model_year = pd.concat(gen_dfs, ignore_index=True)
@@ -1673,7 +1676,16 @@ def main(
         # retrieve gc for this case, using settings for first year so we get all
         # plants that survive up to that point (using last year would exclude
         # plants that retire during the study)
-        gc = GeneratorClusters(pudl_engine, pudl_out, pg_engine, first_year_settings)
+        if myopic:
+            gc = GeneratorClusters(
+                pudl_engine, pudl_out, pg_engine, first_year_settings
+            )
+        # Additional setup of 'multi_period=True' for foresight model to be consistent with GenX.
+        # It aims to make sure all inputs have the same set of resources for multi-period/foresight models.
+        else:
+            gc = GeneratorClusters(
+                pudl_engine, pudl_out, pg_engine, first_year_settings, multi_period=True
+            )
 
         # gc.fuel_prices already spans all years. We assume any added fuels show
         # up in the last year of the study. Then add_user_fuel_prices() adds them
