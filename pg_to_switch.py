@@ -648,10 +648,10 @@ def gen_info_file(
         "Var_OM_Cost_per_MWh",
         "Fixed_OM_Cost_per_MWhyr",
     ]
-    gen_om_by_period = gens_by_model_year[["Resource", "model_year"] + om_cols]
-    gen_om_by_period[om_cols] -= gens_by_model_year[
-        [c + "_mean" for c in om_cols]
-    ].values
+    # drop existing generators that are retired by this time
+    gen_om_by_period = gens_by_model_year.query("Existing_Cap_MW.notna() or new_build")
+    # calculate difference from the mean
+    gen_om_by_period[om_cols] -= gen_om_by_period[[c + "_mean" for c in om_cols]].values
     # ignore tiny differences from the mean
     gen_om_by_period[om_cols] = gen_om_by_period[om_cols].mask(
         gen_om_by_period[om_cols].abs() <= 1e-9, 0
@@ -659,9 +659,9 @@ def gen_info_file(
     # drop zeros (not essential, but helpful for seeing only the ones with adjustments)
     gen_om_by_period[om_cols] = gen_om_by_period[om_cols].replace({0: float("nan")})
     gen_om_by_period = gen_om_by_period.dropna(subset=om_cols, how="all")
-    # drop existing generators that are retired by this time
-    gen_om_by_period = gen_om_by_period.query("Existing_Cap_MW.notna() or new_build")
+
     # filter columns
+    gen_om_by_period = gen_om_by_period[["Resource", "model_year"] + om_cols]
     gen_om_by_period.columns = [
         "GENERATION_PROJECT",
         "PERIOD",
