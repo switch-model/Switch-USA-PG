@@ -659,6 +659,9 @@ def gen_info_file(
     # drop zeros (not essential, but helpful for seeing only the ones with adjustments)
     gen_om_by_period[om_cols] = gen_om_by_period[om_cols].replace({0: float("nan")})
     gen_om_by_period = gen_om_by_period.dropna(subset=om_cols, how="all")
+    # drop existing generators that are retired by this time
+    gen_om_by_period = gen_om_by_period.query("Existing_Cap_MW.notna() or new_build")
+    # filter columns
     gen_om_by_period.columns = [
         "GENERATION_PROJECT",
         "PERIOD",
