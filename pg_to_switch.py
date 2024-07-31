@@ -255,6 +255,7 @@ def operational_files(
     for model_year, year_settings in scen_settings_dict.items():
 
         period_all_gen = gens_by_model_year.query("model_year == @model_year")
+        print("Gathering generator variability data.")
         period_all_gen_variability = make_generator_variability(period_all_gen)
         period_all_gen_variability.columns = period_all_gen["Resource"]
         if "gen_is_baseload" in period_all_gen.columns:
@@ -284,6 +285,7 @@ def operational_files(
 
         cluster_time = year_settings.get("reduce_time_domain") is True
 
+        # do time clustering/sampling
         if cluster_time:
             assert "time_domain_periods" in year_settings
             assert "time_domain_days_per_period" in year_settings
@@ -291,6 +293,7 @@ def operational_files(
             # results is a dict with keys "resource_profiles" (gen_variability), "load_profiles",
             # "time_series_mapping" (maps clusters sequentially to potential periods in year),
             # "ClusterWeights", etc. See PG for full details.
+            print("Beginning clustering of timeseries.")
             results, representative_point, weights = kmeans_time_clustering(
                 resource_profiles=period_all_gen_variability,
                 load_profiles=period_lc,
@@ -302,8 +305,25 @@ def operational_files(
                     "variable_resources_only", True
                 ),
             )
-            period_lc = results["load_profiles"]
-            period_variability = results["resource_profiles"]
+            print("Finished clustering timeseries.")
+            period_lc_sampled = results["load_profiles"]
+            period_variability_sampled = results["resource_profiles"]
+
+        #######
+        # Omit existing generators that have no active capacity this period.
+        # In some cases, PowerGenome may include generators that are post-
+        # retirement (or maybe pre-construction?), to make sure the same sample
+        # weeks are selected for every period. Here we filter those out because
+        # Switch will not accept time-varying data for generators that cannot be
+        # used.
+        period_all_gen = period_all_gen.query("Existing_Cap_MW.notna() or new_build")
+        period_all_gen_variability = period_all_gen_variability.loc[
+            :, period_all_gen["Resource"]
+        ]
+        if cluster_time:
+            period_variability_sampled = period_variability_sampled.loc[
+                :, period_all_gen["Resource"]
+            ]
 
         # timeseries_df and timepoints_df
         if cluster_time:
@@ -321,14 +341,14 @@ def operational_files(
         else:
             if year_settings.get("full_time_domain") is True:
                 timeseries_df, timepoints_df, timestamp_interval = timeseries_full(
-                    period_lc,
+                    period_lc_sampled,
                     year_settings["model_year"],
                     year_settings["model_first_planning_year"],
                     settings=year_settings,
                 )
             else:
                 timeseries_df, timepoints_df, timestamp_interval = timeseries(
-                    period_lc,
+                    period_lc_sampled,
                     year_settings["model_year"],
                     year_settings["model_first_planning_year"],
                     settings=year_settings,
@@ -358,7 +378,7 @@ def operational_files(
             hydro_timepoints_df = hydro_timepoints_pg_kmeans(timepoints_df)
             hydro_timeseries_table = hydro_timeseries_pg_kmeans(
                 period_all_gen,
-                period_variability.loc[
+                period_variability_sampled.loc[
                     :, period_all_gen.loc[period_all_gen["HYDRO"] == 1, "Resource"]
                 ],
                 hydro_timepoints_df,
@@ -383,7 +403,7 @@ def operational_files(
                 water_node_tp_flows,
             ) = hydro_system_module_tables(
                 period_all_gen,
-                period_variability.loc[
+                period_variability_sampled.loc[
                     :, period_all_gen.loc[period_all_gen["HYDRO"] == 1, "Resource"]
                 ],
                 hydro_timepoints_df,
@@ -412,7 +432,7 @@ def operational_files(
 
         # loads
         if cluster_time:
-            loads = load_pg_kmeans(period_lc, timepoints_df)
+            loads = load_pg_kmeans(period_lc_sampled, timepoints_df)
             timepoints_tp_id = timepoints_df[
                 "timepoint_id"
             ].to_list()  # timepoint_id list
@@ -422,7 +442,7 @@ def operational_files(
             loads = loads.append(dummy_df)
         else:
             loads, loads_with_year_hour = loads_table(
-                period_lc,
+                period_lc_sampled,
                 timepoints_timestamp,
                 timepoints_dict,
                 year_settings["model_year"],
@@ -439,7 +459,7 @@ def operational_files(
         # capacity factors for variable generators
         if cluster_time:
             vcf = variable_cf_pg_kmeans(
-                period_all_gen, period_variability, timepoints_df
+                period_all_gen, period_variability_sampled, timepoints_df
             )
         else:
             vcf = variable_capacity_factors_table(
@@ -806,7 +826,7 @@ def gen_tables(gc, pudl_engine, scen_settings_dict):
     # Set same info as eia_build_info() for generic generators (Resources in
     # the "existing" list that didn't get matching record(s) from the
     # eia_unit_info, currently only distributed generation).
-    cb_df = pd.concat(unit_dfs)
+    cb_df = pd.concat(unit_dfs, ignore_index=True)
     # 'add_generic_gen_build_info' function above add the 'capacity_mw' for
     # distributed solar as the total available capacity at each model year, while SWITCH
     # prefers to have the 'capacity_mw' loaded as the amount of capacity installation/addition at
@@ -821,11 +841,8 @@ def gen_tables(gc, pudl_engine, scen_settings_dict):
         diff[0] = data.iloc[0]["capacity_mw"]
         data["capacity_mw"] = diff
         dg = dg.append(data)
-
-    dg = dg.set_index(["model_year"], append=True)
-    cb_df = cb_df.set_index(["model_year"], append=True)
     cb_df.loc[dg.index, "capacity_mw"] = dg["capacity_mw"]
-    cb_df = cb_df.reset_index(level=["model_year"])
+
     gc.settings = orig_gc_settings
 
     gens_by_model_year = pd.concat(gen_dfs, ignore_index=True)
@@ -1673,19 +1690,22 @@ def main(
         first_year_settings = first_value(scen_settings_dict)
         final_year_settings = final_value(scen_settings_dict)
 
-        # retrieve gc for this case, using settings for first year so we get all
+        # Retrieve gc for this case, using settings for first year so we get all
         # plants that survive up to that point (using last year would exclude
         # plants that retire during the study)
-        if myopic:
-            gc = GeneratorClusters(
-                pudl_engine, pudl_out, pg_engine, first_year_settings
-            )
-        # Additional setup of 'multi_period=True' for foresight model to be consistent with GenX.
-        # It aims to make sure all inputs have the same set of resources for multi-period/foresight models.
-        else:
-            gc = GeneratorClusters(
-                pudl_engine, pudl_out, pg_engine, first_year_settings, multi_period=True
-            )
+        # We set the multi_period flag based on the myopic flag; if multi_period
+        # is set (foresight models), PowerGenome uses the same generators for all
+        # periods (i.e., all generators in the database), which ensures that the
+        # time clustering ends up the same for all periods. But then PowerGenome
+        # also generates time-based data for generators even for periods when
+        # they are not operational.
+        gc = GeneratorClusters(
+            pudl_engine,
+            pudl_out,
+            pg_engine,
+            first_year_settings,
+            multi_period=(not myopic),
+        )
 
         # gc.fuel_prices already spans all years. We assume any added fuels show
         # up in the last year of the study. Then add_user_fuel_prices() adds them
