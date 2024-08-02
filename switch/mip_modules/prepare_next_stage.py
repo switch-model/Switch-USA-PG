@@ -183,12 +183,14 @@ def post_solve(m, outdir):
     next_gen_info = read_csv(next_in_path, "gen_info.csv")
     predet = predet.merge(next_gen_info["GENERATION_PROJECT"])
 
-    # distributed solar(dg) are treated as existing generators in MIP study and it has
-    # a growing capacity in each period. For myopic, the capacity showed in
-    # build_gen_predetermined.csv are the TOTAL available capacity in current period.
-    # 'merge_build_data' function below would keep all the records since they are not
-    # duplicated (total capacity varies by period). We need to drop the record of dg from
-    # previous period before merging with next period's "gen_build_predetermined.csv".
+    # Distributed solar (dg) are treated as existing generators in MIP study and
+    # it has a growing capacity in each period. pg_to_switch.py chooses years
+    # when the solar could have been installed to get the right total capacity
+    # available in each period. But for myopic models, those choices may differ
+    # from one period to the next. The 'merge_build_data' function below would
+    # keep all the records since they are not duplicated (date of installation
+    # varies by stage of the model). So we drop the record of dg from previous
+    # period before merging with next period's "gen_build_predetermined.csv".
     predet = predet.loc[predet["GENERATION_PROJECT"].str.contains("distr") == False]
     # merge with any from the next model, to pickup predetermined construction
     # after this part of the study; when there are duplicates, keep the first

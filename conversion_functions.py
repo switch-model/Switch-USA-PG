@@ -7,6 +7,7 @@ from typing import List
 
 import numpy as np
 import pandas as pd
+import scipy
 import math
 
 from powergenome.time_reduction import kmeans_time_clustering
@@ -118,52 +119,6 @@ def plant_gen_id(df):
     plant_id_eia = df["plant_id_eia"]
     df["plant_gen_id"] = plant_id_eia.astype(str) + "_" + df["generator_id"].astype(str)
     return df
-
-
-def add_generic_gen_build_info(units, settings):
-    """
-    Update units dataframe with synthetic plant_gen_id, build_year, capacity_mw
-    and capacity_mwh for generic existing generators. These are generators that
-    PowerGenome reported as existing but didn't get unit-level construction info
-    from eia_build_info(), e.g., distributed generation.
-    """
-    # Distributed generation and a few others are in the "existing" list with
-    # non-zero Existing_Cap_MW, but no plant_id_eia and therefore no build_year
-    # or capacity_mw.
-    # TODO: fix this upstream in PowerGenome, e.g., create dummy plant
-    # construction info there in addition to the overall project info
-
-    # We could assess the amount of capacity available for each Resource in each
-    # model_year, then create records with various build_year and capacity
-    # values that will result in the specified amount of capacity being
-    # available in each year. But this doesn't have a simple solution, because
-    # capacity is aging out at the same time as it is being added, so we'd
-    # probably need to write a short linear program like "min sum(build[g,
-    # y]*(2050-y) for g in gens, y in {1950...2050}), such that known_online[g,
-    # y] = sum(build[g, y'] for y' in {y-max_age..y}), y in {2030, 2040, 2050}".
-    # This would work for multi-period (foresight) models, but then we'd also
-    # need some way to coordinate these choices between the separate periods of
-    # myopic models.
-
-    # Instead of that, we assume the plants were built in an arbitrary recent
-    # year. That way they will persist through the study (if long-lived) and
-    # the build_year will be consistent across multiple stages of myopic models.
-
-    generic = units["existing"] & units["build_year"].isna()
-
-    units.loc[generic, "plant_gen_id"] = "generic"
-
-    # NOTE: The 'build_year' of these generic generators should be assigned based on the
-    # nature of the nature (ie, 'capacity_mw') of the specific data. One needs to confirm
-    # the technology/data of these missing generic generators first.
-    # For distributed solar / distributed generators, the raw data gives the capacity
-    # for the total available capacity at each 'model_year', we are setting the build year
-    # ahead of the "model_first_planning_year"
-    units.loc[generic, "build_year"] = settings.get("model_first_planning_year") - 1
-    units.loc[generic, "capacity_mw"] = units.loc[generic, "Existing_Cap_MW"]
-    units.loc[generic, "capacity_mwh"] = units.loc[generic, "Existing_Cap_MWh"]
-
-    return units
 
 
 def gen_info_table(

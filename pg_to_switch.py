@@ -2,6 +2,7 @@ import os
 import sys
 import pandas as pd
 import numpy as np
+import scipy
 import math
 from datetime import datetime as dt
 import ast
@@ -51,7 +52,6 @@ from powergenome.co2_pipeline_cost import merge_co2_pipeline_costs
 from conversion_functions import (
     switch_fuel_cost_table,
     switch_fuels,
-    add_generic_gen_build_info,
     gen_info_table,
     hydro_time_tables,
     load_zones_table,
@@ -823,33 +823,34 @@ def gen_tables(gc, pudl_engine, scen_settings_dict):
         # units online in this model_year for each gen cluster
         eia_unit_info = eia_build_info(gc)
         unit_df = gen_df.merge(eia_unit_info, on="Resource", how="left")
-        unit_df = add_generic_gen_build_info(unit_df, year_settings)
         unit_dfs.append(unit_df)
-
-    # Set same info as eia_build_info() for generic generators (Resources in
-    # the "existing" list that didn't get matching record(s) from the
-    # eia_unit_info, currently only distributed generation).
-    cb_df = pd.concat(unit_dfs, ignore_index=True)
-    # 'add_generic_gen_build_info' function above add the 'capacity_mw' for
-    # distributed solar as the total available capacity at each model year, while SWITCH
-    # prefers to have the 'capacity_mw' loaded as the amount of capacity installation/addition at
-    # each 'build_year'.
-    dg_cap = pd.DataFrame(cb_df.loc[cb_df["technology"].str.contains("distri")])
-    dg_grouped = dg_cap.sort_values(
-        ["region", "technology", "cluster", "build_year"]
-    ).groupby(["region", "technology", "cluster"])
-    dg = pd.DataFrame()
-    for group, data in dg_grouped:
-        diff = list(data.sort_values(by=["build_year"])["capacity_mw"].diff())
-        diff[0] = data.iloc[0]["capacity_mw"]
-        data["capacity_mw"] = diff
-        dg = dg.append(data)
-    cb_df.loc[dg.index, "capacity_mw"] = dg["capacity_mw"]
 
     gc.settings = orig_gc_settings
 
     gens_by_model_year = pd.concat(gen_dfs, ignore_index=True)
-    units_by_model_year = cb_df.copy()
+    units_by_model_year = pd.concat(unit_dfs, ignore_index=True)
+
+    # Set same info as eia_build_info() (build_year, capacity_mw and
+    # capacity_mwh) for generic generators (Resources in the "existing" list
+    # that didn't get matching record(s) from the eia_unit_info, currently only
+    # distributed generation). We do this after the loop so we can infer a
+    # sequence of capacity additions that results in the available capacity
+    # reported for each model year.
+    generic = units_by_model_year["existing"] & units_by_model_year["build_year"].isna()
+    generic_units = units_by_model_year[generic].drop(
+        columns=["plant_gen_id", "build_year", "capacity_mw", "capacity_mwh"]
+    )
+    generic_units = generic_units.merge(
+        generic_gen_build_info(generic_units, first_value(scen_settings_dict)),
+        on="Resource",
+        how="left",
+    )
+    units_by_model_year = (
+        pd.concat([units_by_model_year[~generic], generic_units])
+        .sort_values(["Resource", "model_year", "build_year"])
+        .reset_index()
+    )
+
     assert (
         units_by_model_year.query("existing")["build_year"].notna().all()
     ), "Some existing generating units have no build_year assigned."
@@ -1014,6 +1015,106 @@ def eia_build_info(gc: GeneratorClusters):
             "capacity_mwh",
         ]
     ]
+
+
+def as_col(series):
+    # convert pandas series to numpy column
+    return series.to_numpy()[:, np.newaxis]
+
+
+def infer_build_years(df):
+    """
+    Find capacity built in specific years that would make the specified
+    amount available in each model year, taking account of retirements.
+    `df` must contain `retirement_age`, `model_year` and `Existing_Cap_MW`
+    If exact solution is not possible, we use a least-squares fit instead.
+    Return dataframe showing `Resource`, `build_year` and `capacity_mw`.
+    """
+    # df = pd.DataFrame({'Resource': ['a', 'a', 'a'], 'model_year': [2025, 2030, 2035], 'retirement_age': [30, 30, 30], 'Existing_Cap_MW': [10, 20, 10], 'Existing_Cap_MWh': [5, 10, 10]})
+    first_build_year = (df["model_year"] - df["retirement_age"] + 1).min()
+    last_build_year = df["model_year"].max()
+    # reverse order of years so the algorithm will prefer later ones
+    build_year = np.arange(last_build_year, first_build_year - 1, -1)
+    # flag build years that would still be in service for each resource / model
+    # year combo
+    in_service_flag = (
+        (build_year <= as_col(df["model_year"]))
+        & (build_year > as_col(df["model_year"] - df["retirement_age"]))
+    ).astype(int)
+    # now we want a matrix with columns showing capacity built in each year
+    # such that in_service_flag @ built = Existing_Cap_MW
+    # This can be seen as a non-negative least-squares problem:
+    built_mw, rnorm_mw = scipy.optimize.nnls(in_service_flag, df["Existing_Cap_MW"])
+    built_mwh, rnorm_mwh = scipy.optimize.nnls(in_service_flag, df["Existing_Cap_MWh"])
+    if rnorm_mw > 0:
+        print(
+            f"WARNING: MW construction schedule for {df['Resource'].iloc[0]} cannot match reported capacity"
+        )
+    if rnorm_mwh > 0:
+        print(
+            f"WARNING: MWh construction schedule for {df['Resource'].iloc[0]} cannot match reported capacity"
+        )
+
+    result = pd.DataFrame(
+        {
+            "build_year": build_year,
+            "capacity_mw": built_mw,
+            "capacity_mwh": built_mwh,
+        }
+    ).round(6)
+    # drop 0's and then drop any empty rows
+    result[["capacity_mw", "capacity_mwh"]] = result[
+        ["capacity_mw", "capacity_mwh"]
+    ].replace(0.0, np.nan)
+    result = result.dropna(subset=["capacity_mw", "capacity_mwh"], how="all")
+    return result
+
+
+def generic_gen_build_info(gens, settings):
+    """
+    Return dataframe with Resource, dummy generator id and inferred build_year,
+    capacity_mw and capacity_mwh columns for generic existing generators.
+
+    These are generators that PowerGenome reported as existing but didn't get
+    unit-level construction info from eia_build_info(), e.g., distributed
+    generation.
+
+    The gens dataframe must have Resource, retirement_age, model_year,
+    Existing_Cap_MW and Existing_Cap_MWh (capacity online as of that year). The
+    construction plan is achieves the specified capacity as of each model year
+    if possible.
+
+    This sets up a least-squares problem to find build_years and quantities that
+    are compatible with the reported total capacity online for each resource:
+    minimize (Ax - b)^2, subject to x >= 0, where A is the build_year:model_year
+    correspondence matrix (1 for any build years that are active in a particular
+    model year), x is the capacity built each year, and b is the capacity online
+    in each model year.
+
+    For monotonically increasing capacity or capacity with one dip, this should
+    always have an exact solution. For more complex patterns, especially with
+    long retirement ages, an exact solution may not be possible, in which case a
+    warning will be shown.
+    """
+    # gens = pd.DataFrame({'Resource': ['a', 'a', 'a'], 'model_year': [2025, 2030, 2035], 'retirement_age': [30, 30, 30], 'Existing_Cap_MW': [10, 20, 10], 'Existing_Cap_MWh': [5, 20, 10]})
+
+    # Set retirement age for use in installation date calculations (also
+    # calculated in other places but not kept; maybe these should be
+    # consolidated?)
+    gens = set_retirement_age(gens.copy(), settings)
+    gens["Existing_Cap_MW"] = gens["Existing_Cap_MW"].fillna(0.0)
+    gens["Existing_Cap_MWh"] = gens["Existing_Cap_MWh"].fillna(0.0)
+
+    result = (
+        gens.groupby("Resource")[
+            "retirement_age", "model_year", "Existing_Cap_MW", "Existing_Cap_MWh"
+        ]
+        .apply(infer_build_years)
+        .reset_index()
+        .drop(columns=["level_1"])
+    )
+    result["plant_gen_id"] = "generic"
+    return result
 
 
 def other_tables(
@@ -1537,8 +1638,9 @@ def scenario_files(in_folder, out_folder, settings):
 settings_file = "MIP_results_comparison/case_settings/26-zone/settings-atb2023"
 results_folder = "/tmp/pg_test"
 # case_id = ["base_short"]
-case_id = ["base"]
-year = [2030] # [2030, 2040, 2050]
+case_id = ["base_20_week"]
+# year = [2030] # [2030, 2040, 2050]
+year = []
 myopic = False
 """
 
@@ -1746,5 +1848,6 @@ def main(
     scenario_files(input_folder, results_folder, settings)
 
 
-if __name__ == "__main__":
+if __name__ == "__main__" and "ipykernel" not in sys.argv[0]:
+    # running as a script, not from a jupyter environment
     typer.run(main)
