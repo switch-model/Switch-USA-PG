@@ -1024,26 +1024,43 @@ def as_col(series):
 
 def infer_build_years(df):
     """
-    Find capacity built in specific years that would make the specified
-    amount available in each model year, taking account of retirements.
-    `df` must contain `retirement_age`, `model_year` and `Existing_Cap_MW`
+    Find capacity built in specific years that would make the specified amount
+    available in each model year, taking account of retirements. `df` must
+    contain `retirement_age`, `model_year` and `Existing_Cap_MW`. Return
+    dataframe showing `Resource`, `build_year` and `capacity_mw`.
+
     If exact solution is not possible, we use a least-squares fit instead.
-    Return dataframe showing `Resource`, `build_year` and `capacity_mw`.
+
+    This sets up a linear algebra problem that sums the construction in each
+    build_year that would still be active in each model_year. Then it uses a
+    scipy solver to find the amount to add in each build_year to get the right
+    amount for each model_year. This solves A x = b for x, where x is the amount
+    added in each build_year (column vector), b is the amount online in each
+    model_year (column vector), and A is a matrix with 1 for every build_year
+    (column) that is available to use in each model_year (row). This uses a
+    least-squares solver with non-negative x values. If the system is
+    undertermined (generally true), it will find an exact solution. If an exact
+    solution is not possible (e.g., there are multiple dips in capacity within
+    the lifespan of the asset), it will find a least-squares fit and issue a
+    warning.
     """
     # df = pd.DataFrame({'Resource': ['a', 'a', 'a'], 'model_year': [2025, 2030, 2035], 'retirement_age': [30, 30, 30], 'Existing_Cap_MW': [10, 20, 10], 'Existing_Cap_MWh': [5, 10, 10]})
     first_build_year = (df["model_year"] - df["retirement_age"] + 1).min()
     last_build_year = df["model_year"].max()
     # reverse order of years so the algorithm will prefer later ones
     build_year = np.arange(last_build_year, first_build_year - 1, -1)
-    # flag build years that would still be in service for each resource / model
-    # year combo
+    # identify build_years (columns) that would still be in service for each
+    # model_year (row)
     in_service_flag = (
         (build_year <= as_col(df["model_year"]))
         & (build_year > as_col(df["model_year"] - df["retirement_age"]))
     ).astype(int)
-    # now we want a matrix with columns showing capacity built in each year
-    # such that in_service_flag @ built = Existing_Cap_MW
-    # This can be seen as a non-negative least-squares problem:
+    # now we want a vector showing capacity built in each year such that
+    # in_service_flag ~matrix multiply~ built = Existing_Cap_MW, i.e., the flag
+    # shows which build years are active for each model year, and we want the
+    # sum of the in_service_flags for this model_year times capacity built each
+    # build_year (built_mw) to match Existing_Cap_MW for this model_year. This
+    # can be seen as a non-negative least-squares problem:
     built_mw, rnorm_mw = scipy.optimize.nnls(in_service_flag, df["Existing_Cap_MW"])
     built_mwh, rnorm_mwh = scipy.optimize.nnls(in_service_flag, df["Existing_Cap_MWh"])
     if rnorm_mw > 0:
