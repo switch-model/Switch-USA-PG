@@ -161,6 +161,9 @@ def post_solve(m, outdir):
         }
     )
     gen_info = read_csv(possibly_chained(in_path, "gen_info.csv"))
+    # note: retire will have rows if gen_can_retire_early or gen_can_suspend
+    # are set, but it is only binding for the future if gen_can_suspend is _not_
+    # set but there is still a value (implying gen_can_retire_early was set).
     if not "gen_can_suspend" in gen_info.columns:
         gen_info["gen_can_suspend"] = 0
     must_retire_gens = gen_info.query("gen_can_suspend == 0").iloc[0, :]
@@ -168,6 +171,8 @@ def post_solve(m, outdir):
         retire["GENERATION_PROJECT"].isin(must_retire_gens) & (retire["retire_mw"] > 0),
         :,
     ]
+    # todo?: handle chained models with multi-period stages:
+    # retire = retire.groupby(['GENERATION_PROJECT', 'build_year'])[['retire_mw']].sum().reset_index()
     predet_cols = predet.columns
     predet = predet.merge(retire, how="left")
     predet["build_gen_predetermined"] -= predet["retire_mw"].fillna(0)
@@ -183,14 +188,12 @@ def post_solve(m, outdir):
     next_gen_info = read_csv(next_in_path, "gen_info.csv")
     predet = predet.merge(next_gen_info["GENERATION_PROJECT"])
 
-    # Distributed solar (dg) are treated as existing generators in MIP study and
-    # it has a growing capacity in each period. pg_to_switch.py chooses years
-    # when the solar could have been installed to get the right total capacity
-    # available in each period. But for myopic models, those choices may differ
-    # from one period to the next. The 'merge_build_data' function below would
-    # keep all the records since they are not duplicated (date of installation
-    # varies by stage of the model). So we drop the record of dg from previous
-    # period before merging with next period's "gen_build_predetermined.csv".
+    # distributed solar(dg) are treated as existing generators in MIP study and it has
+    # a growing capacity in each period. For myopic, the capacity showed in
+    # build_gen_predetermined.csv are the TOTAL available capacity in current period.
+    # 'merge_build_data' function below would keep all the records since they are not
+    # duplicated (total capacity varies by period). We need to drop the record of dg from
+    # previous period before merging with next period's "gen_build_predetermined.csv".
     predet = predet.loc[predet["GENERATION_PROJECT"].str.contains("distr") == False]
     # merge with any from the next model, to pickup predetermined construction
     # after this part of the study; when there are duplicates, keep the first
