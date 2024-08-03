@@ -5,22 +5,24 @@ import numpy as np
 
 from transmission_scripts.TX_util import tp_to_date
 
-# note: this will work relative to the directory where the script is run, which
-# should usually be Switch-USA-PG. But for special cases, you can copy the
-# inputs and outputs directories to a different location and run it there, as
-# long as they are in the expected structure (26-zone/in/year/case and 26-zone/out/year/case)
+# - Switch model inputs and outputs should be in a "26-zone" directory
+#   inside the same directory as this script.
+# - MIP_results_comparison directory should be in the directory one level above
+#   this script
 
 ################################### FOR 26 ZONE ###################################
 root_folder = os.path.dirname(__file__)
 
 # results folder should be one level up from this script
+model_folder = os.path.join(root_folder, "26-zone")
 results_folder = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "MIP_results_comparison")
+    os.path.join(root_folder, "..", "MIP_results_comparison")
 )
 
 year_list = [2027, 2030, 2035, 2040, 2045, 2050]
 case_list = {
-    # "base_short": "26z-short-base-200",
+    # local_dir: MIP_results_comparison_dir
+    # "base_short": "26z-short-base-200-new",
     # "base_short_co2_1000": "26z-short-base-1000",
     # "base_short_co2_50": "26z-short-base-50",
     # "base_short_current_policies": "26z-short-current-policies",
@@ -42,15 +44,11 @@ case_list = {
     "base_52_week_tx_0": "full-base-200-tx-0",
     "base_52_week_tx_15": "full-base-200-tx-15",
     "base_52_week_tx_50": "full-base-200-tx-50",
-    #"base_short_commit":
-    "base_52_week_commit":"full-base-200-commit"
-    #"current_policies_52_week_high_ccs": "full-current-policies",
-    #"current_policies_52_week_retire_high_ccs": "full-current-policies_retire"
+    # "base_short_commit":
+    "base_52_week_commit": "full-base-200-commit",
+    # "current_policies_52_week_high_ccs": "full-current-policies",
+    # "current_policies_52_week_retire_high_ccs": "full-current-policies_retire"
 }
-
-# TODO:
-# 26z-short-foresight
-# 26z-short-reserves
 
 
 def skip_case(case):
@@ -68,7 +66,8 @@ def skip_case(case):
     ]
 
     if not all(os.path.exists(f) for f in test_in_files):
-        print(f"Skipping unsolved case '{i}'.")
+        print(f"Skipping unsolved case '{c}'.")
+        breakpoint()
         return True
 
     if "--skip-saved" in sys.argv and all(os.path.exists(f) for f in test_out_files):
@@ -76,10 +75,10 @@ def skip_case(case):
         earliest_record = min(os.path.getmtime(f) for f in test_out_files)
 
         if latest_change < earliest_record:
-            print(f"Skipping previously saved case '{i}'.")
+            print(f"Skipping previously saved case '{c}'.")
             return True
 
-    print(f"Processing case '{i}'")
+    print(f"Processing case '{c}'")
     return False
 
 
@@ -88,7 +87,7 @@ def output_file(case, year, file):
     Give path to output file generated for the specified case.
     """
     # This is easy because every model has its own outputs dir
-    return os.path.join(root_folder, "26-zone/out", str(year), case, file)
+    return os.path.join(model_folder, "out", str(year), case, file)
 
 
 def input_file(case, year, file):
@@ -154,11 +153,11 @@ def tech_type(gen_proj):
 
 
 print("\ncreating resource_capacity.csv")
-for i in case_list:
-    if skip_case(i):
+for c in case_list:
+    if skip_case(c):
         continue
 
-    build_dfs = [
+    cap_dfs = [
         pd.DataFrame(
             columns=[
                 "resource_name",
@@ -176,141 +175,85 @@ for i in case_list:
         )
     ]
     for y in year_list:
-        # find the capacity built in this model (including existing projects)
-        # that is still online for the period, i.e., has
-        # build year + max_age_years > model start year
+        # find the capacity online at the start and end of each period
 
-        # lookup start and end years for period(s) in this model
-        periods = pd.read_csv(input_file(i, y, "periods.csv")).rename(
-            columns={"INVESTMENT_PERIOD": "planning_year"}
+        # get capacity online and retirements in effect from gen_cap.csv;
+        # get amount built during the period from gen_build.csv.
+        cap = pd.read_csv(output_file(c, y, "gen_cap.csv"), na_values=".").merge(
+            pd.read_csv(output_file(c, y, "gen_build.csv"), na_values=".")
         )
-
-        # get retirement age from gen_info.csv
-        gen_info = pd.read_csv(input_file(i, y, "gen_info.csv"))[
-            ["GENERATION_PROJECT", "gen_max_age", "gen_load_zone"]
-        ]
-        # The 'input_file' function would keep track of the 'chained' files if applicable.
-        gen_pre = pd.read_csv(input_file(i, y, "gen_build_predetermined.csv")).merge(
-            gen_info, how="left"
-        )
-        gen_pre["retire_year"] = gen_pre["build_year"] + gen_pre["gen_max_age"]
-
-        # cross-reference with the period information for this model
-        gen_pre = (
-            gen_pre.assign(__x=1)
-            .merge(periods.assign(__x=1), on="__x")
-            .drop(columns=["__x"])
-        )
-        # replace '.' with 0 for sum later.
-        gen_pre.loc[
-            gen_pre["build_gen_energy_predetermined"] == ".",
-            "build_gen_energy_predetermined",
-        ] = 0
-        gen_pre["build_gen_energy_predetermined"] = (
-            gen_pre["build_gen_energy_predetermined"].fillna(0).astype(float)
-        )
-        # find amount of capacity online before and after each period
-        # (note: with retirement, "before" becomes ill-defined in myopic models,
-        # because we don't know how much was suspended in the previous period,
-        # so we fix that up later)
-        # Assume "start" means capacity available immediately prior to running
-        # this model, possibly including capacity that retired just as this
-        # model started.
-        cap_start = (
-            gen_pre.query(
-                "(build_year < period_start) & (retire_year > period_start - 1)"
-            )
-            .groupby(["GENERATION_PROJECT", "planning_year"], as_index=False)
-            .agg(
-                {
-                    "build_gen_predetermined": "sum",
-                    "build_gen_energy_predetermined": "sum",
-                }
-            )
-        ).rename(
-            columns={
-                "GENERATION_PROJECT": "resource_name",
-                "build_gen_predetermined": "start_value",
-                "build_gen_energy_predetermined": "start_MWh",
-            }
-        )
-        # assume anything that made it _past_ the start of this period is still
-        # there at the end, since that is what Switch does and it captures the
-        # notion of "what's running in this period" (if capacity is online one
-        # period and retired by the next period, it is treated as retired in the
-        # second period)
-        cap_end = pd.read_csv(output_file(i, y, "gen_cap.csv")).rename(
+        cap = cap.rename(
             columns={
                 "GENERATION_PROJECT": "resource_name",
                 "PERIOD": "planning_year",
+                "gen_load_zone": "zone",
                 "GenCapacity": "end_value",
                 "GenStorageCapacity": "end_MWh",
             }
-        )[["resource_name", "planning_year", "end_value", "end_MWh"]]
-
-        # need an outer join to get any that didn't exist at the start (new
-        # build) or end (retired during study)
-        build_sum = cap_start.merge(cap_end, how="outer").fillna(0)
-        # drop resources have zero capacity at the start and end
-        # these are caused because they are reported in gen_cap.csv
-        # may want to stop reporting them in switch solve.
-        build_sum = build_sum.loc[
-            (build_sum["start_value"] != 0) | (build_sum["end_value"] != 0)
-        ]
-        # add other columns needed for the report
-        build_sum["zone"] = build_sum["resource_name"].map(
-            gen_info.set_index("GENERATION_PROJECT")["gen_load_zone"]
         )
-        build_sum["tech_type"] = tech_type(build_sum["resource_name"])
-        build_sum["model"] = "SWITCH"
-        build_sum["planning_year"] = y
-        build_sum["case"] = i
-        build_sum["unit"] = "MW"
 
-        build_dfs.append(build_sum)
+        # Fill missing capacity values; these are generally due to old plants
+        # that got carried forward to later models. They don't participate in
+        # the objective or constraints, so the solver doesn't assign them values.
+        # This also converts the MWh values from NaN to 0 for the non-storage
+        # generators, which seems to be the preferred treatment.
+        cap = cap.fillna(0.0)
+
+        # Infer starting values from ending values. These may not match the
+        # previous period's ending value if existing capacity aged out right
+        # after the previous period. But these values aren't used for anything
+        # and this probably matches GenX's values.
+        cap["start_value"] = cap.eval("end_value + SuspendGen_total - BuildGen")
+        # note: MWh can't be retired
+        cap["start_MWh"] = cap.eval("end_MWh - BuildStorageEnergy")
+
+        cap = cap[
+            [
+                "resource_name",
+                "zone",
+                "planning_year",
+                "start_value",
+                "start_MWh",
+                "end_value",
+                "end_MWh",
+            ]
+        ]
+
+        # drop resources that have zero capacity at the start and end
+        cap = cap.query(
+            "start_value > 0 or end_value > 0 or start_MWh > 0 or end_MWh > 0"
+        )
+        # add other columns needed for the report
+        cap["tech_type"] = tech_type(cap["resource_name"])
+        cap["model"] = "SWITCH"
+        cap["planning_year"] = y
+        cap["case"] = c
+        cap["unit"] = "MW"
+
+        cap_dfs.append(cap)
 
     # combine and round results (there are some 1e-14's in there)
-    resource_capacity_agg = pd.concat(build_dfs).round(6)
-
-    # TODO: use previous period's end_value as start_value for next period,
-    # if available; this is a better estimate than the ones above, because it
-    # accounts for retirements/suspensions in the previous period (they are
-    # treated as not there at the start, but there at the end if unsuspended)
-    # For now, we ignore this because start_value is not used anywhere.
-
-    # fill missing capacity values; these are generally due to old plants that
-    # got carried forward to later models. They don't participate in the
-    # objective or constraints, so the solver doesn't assign them values
-    # resource_capacity_agg = resource_capacity_agg.fillna(
-    #     {"start_value": 0, "end_value": 0, "start_MWh": 0, "end_MWh": 0}
-    # )
+    cap_agg = pd.concat(cap_dfs).round(6)
 
     # drop empty rows
-    resource_capacity_agg.loc[resource_capacity_agg["end_MWh"] == "."] = 0
-    resource_capacity_agg["end_MWh"] = (
-        resource_capacity_agg["end_MWh"].fillna(0).astype(float)
-    )
-    resource_capacity_agg = resource_capacity_agg.loc[
-        (resource_capacity_agg["end_value"] > 0)
-        | (resource_capacity_agg["end_MWh"] > 0)
-    ]
-    resource_capacity_agg.to_csv(
-        comparison_file(i, "resource_capacity.csv"),
+    cap_agg = cap_agg.loc[(cap_agg["end_value"] > 0) | (cap_agg["end_MWh"] > 0)]
+    cap_agg.to_csv(
+        comparison_file(c, "resource_capacity.csv"),
         index=False,
     )
 
 ####################################### make  transmission.csv
 
 print("\ncreating transmission.csv")
-for i in case_list:
-    if skip_case(i):
+for c in case_list:
+    if skip_case(c):
         continue
     tx_agg = pd.DataFrame()
     for y in year_list:
-        transmission2030_new = pd.read_csv(output_file(i, y, "transmission.csv"))
+        transmission2030_new = pd.read_csv(output_file(c, y, "transmission.csv"))
 
         # find the existing transmission capacity
-        transmission2030_ex = pd.read_csv(input_file(i, y, "transmission_lines.csv"))
+        transmission2030_ex = pd.read_csv(input_file(c, y, "transmission_lines.csv"))
 
         transmission2030 = transmission2030_new.merge(transmission2030_ex, how="left")
 
@@ -318,7 +261,7 @@ for i in case_list:
         df["model"] = "SWITCH"
         df["line_name"] = df["trans_lz1"] + "_to_" + df["trans_lz2"]
         df["planning_year"] = df["PERIOD"]
-        df["case"] = i
+        df["case"] = c
         df["unit"] = "MW"
         # for foreight scenario:
         # define a function to find the values of "TxCapacityNameplate" from last period
@@ -363,33 +306,33 @@ for i in case_list:
         ]
         tx_agg = pd.concat([tx_agg, df])
 
-    tx_agg.to_csv(comparison_file(i, "transmission.csv"), index=False)
+    tx_agg.to_csv(comparison_file(c, "transmission.csv"), index=False)
     df = tx_agg.copy()
     df["value"] = df["end_value"] - df["start_value"]
     df2 = df[["model", "line_name", "planning_year", "case", "unit", "value"]]
     df2.to_csv(
-        comparison_file(i, "transmission_expansion.csv"),
+        comparison_file(c, "transmission_expansion.csv"),
         index=False,
     )
 
 ################################### make  generation.csv
 
 print("\ncreating generation.csv")
-for i in case_list:
-    if skip_case(i):
+for c in case_list:
+    if skip_case(c):
         continue
     generation_agg = pd.DataFrame()
     dispatch_agg = pd.DataFrame()
     for y in year_list:
-        ts = pd.read_csv(input_file(i, y, "timeseries.csv"))
-        df = pd.read_csv(output_file(i, y, "dispatch.csv"))
+        ts = pd.read_csv(input_file(c, y, "timeseries.csv"))
+        df = pd.read_csv(output_file(c, y, "dispatch.csv"))
 
         df["model"] = "SWITCH"
         df["zone"] = df["gen_load_zone"]
         df["resource_name"] = df["generation_project"]
         df["tech_type"] = tech_type(df["resource_name"])
         # df["planning_year"] = y
-        df["case"] = i
+        df["case"] = c
         df["timestep"] = "all"
         df["unit"] = "MWh"
 
@@ -445,8 +388,8 @@ for i in case_list:
         dispatch_agg = pd.concat([dispatch_agg, dp])
         generation_agg = pd.concat([generation_agg, generation])
 
-    dispatch_agg.to_csv(comparison_file(i, "dispatch.csv"), index=False)
-    generation_agg.to_csv(comparison_file(i, "generation.csv"), index=False)
+    dispatch_agg.to_csv(comparison_file(c, "dispatch.csv"), index=False)
+    generation_agg.to_csv(comparison_file(c, "generation.csv"), index=False)
 
     # generation2030 = generation2030.rename({"DispatchGen_MW": "value"}, axis=1)
 
@@ -454,12 +397,12 @@ for i in case_list:
 ################################### make  emission.csv
 
 print("\ncreating emission.csv")
-for i in case_list:
-    if skip_case(i):
+for c in case_list:
+    if skip_case(c):
         continue
     emission_agg = pd.DataFrame()
     for y in year_list:
-        emission2030 = pd.read_csv(output_file(i, y, "dispatch.csv"))
+        emission2030 = pd.read_csv(output_file(c, y, "dispatch.csv"))
         df = emission2030.copy()
 
         df = df.groupby(["gen_load_zone", "period"], as_index=False).agg(
@@ -473,13 +416,13 @@ for i in case_list:
             axis=1,
         )
         df["model"] = "SWITCH"
-        df["case"] = i
+        df["case"] = c
         df["unit"] = "kg"
         df["value"] = df["value"] * 1000  # from ton to kg
         df = df[["model", "zone", "planning_year", "case", "unit", "value"]]
         emission_agg = pd.concat([emission_agg, df])
 
-    emission_agg.to_csv(comparison_file(i, "emissions.csv"), index=False)
+    emission_agg.to_csv(comparison_file(c, "emissions.csv"), index=False)
 
 
 print(
