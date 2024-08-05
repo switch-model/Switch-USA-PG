@@ -211,11 +211,14 @@ def gen_info_table(
 
     # identify generators that can retire early
     try:
-        # settings for newer GenX
+        # settings for newer GenX (not yet implemented as of Aug. 2024)
         gen_info["gen_can_retire_early"] = gen_info["Can_Retire"].astype("Int64")
     except KeyError:
         # settings for older GenX
-        gen_info["gen_can_retire_early"] = (gen_info["New_Build"] >= 0).astype("Int64")
+        # New_Build == -1 -> existing, cannot retire
+        # New_Build == 0 -> existing, can retire
+        # New_Build == 1 -> new build, cannot retire in current version of GenX
+        gen_info["gen_can_retire_early"] = (gen_info["New_Build"] == 0).astype("Int64")
 
     # rename columns
     gen_info.rename(
