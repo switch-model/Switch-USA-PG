@@ -3,7 +3,7 @@ Retrieve and decompress input files to run PowerGenome and set PowerGenome
 parameters to access them.
 """
 
-import os, sys, re, zipfile
+import os, sys, re, zipfile, platform
 import gdown, yaml, powergenome
 
 
@@ -26,6 +26,26 @@ def unzip(filename):
 def main(filter=[]):
     with open("pg_data.yml", "r") as f:
         settings = yaml.safe_load(f)
+
+    os.makedirs("pg_data", exist_ok=True)
+
+    # Warn about Windows limit on filenames if needed
+    # 130 char file name, equal to the longest path created by this script
+    test_file = os.path.abspath(os.path.join("pg_data", "x" * 130))
+    if platform.system == "Windows" and len(test_file) > 260:
+        try:
+            f = open(test_file, "w")
+        except OSError:
+            raise RuntimeError(
+                "This script needs to create files with names longer than 260 "
+                "characters, which are not supported by your current Windows "
+                "configuration. Please see "
+                "https://answers.microsoft.com/en-us/windows/forum/all/how-to-extend-file-path-characters-maximum-limit/691ea463-2e15-452b-8426-8d372003504f"
+                " for options to fix this."
+            )
+        else:
+            f.close()
+            os.remove(test_file)
 
     for dest, url in settings["download_folders"].items():
         if not filter or any(f in dest for f in filter):
