@@ -82,7 +82,7 @@ conda install -y -c conda-forge mamba git
 
 # clone this repository and the dependency submodules (PowerGenome and MIP_results_comparison)
 cd <wherever you want the Switch-USA-PG code>
-git clone https://github.com/switch-model/Switch-USA-PG --recurse-submodules
+git clone https://github.com/switch-model/Switch-USA-PG --recurse-submodules --depth=1
 cd Switch-USA-PG
 
 # Create and activate powergenome environment
