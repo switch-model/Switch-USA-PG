@@ -115,7 +115,7 @@ python download_pg_data.py
 
 ## Notes about PowerGenome scenario configuration
 
-`MIP_results_comparison/case_settings/26-zone/settings` holds the settings
+`MIP_results_comparison/case_settings/26-zone/settings-atb2023` holds the settings
 currently used for all scenarios in this study in a collection of `*.yml` files.
 In addition to these, tabular data is stored in `*.csv` files. The location of
 the .csv files and the specific files to use for the study are identified in
@@ -135,8 +135,8 @@ Run these scripts to generate data. (You can run individual ones as needed for
 testing.)
 
 ```
-python pg_to_switch.py MIP_results_comparison/case_settings/26-zone/settings switch/26-zone/in/ --case-id base_short --case-id base_short_no_ccs --case-id base_short_current_policies --myopic
-python pg_to_switch.py MIP_results_comparison/case_settings/26-zone/settings switch/26-zone/in/ --case-id base_short
+python pg_to_switch.py MIP_results_comparison/case_settings/26-zone/settings-atb2023 switch/26-zone/in/ --case-id base_short --case-id base_short_no_ccs --case-id base_short_current_policies --myopic
+python pg_to_switch.py MIP_results_comparison/case_settings/26-zone/settings-atb2023 switch/26-zone/in/ --case-id base_short
 ```
 
 On an HPC system that uses the slurm scheduling manager, this can be done
