@@ -293,7 +293,7 @@ def operational_files(
             # results is a dict with keys "resource_profiles" (gen_variability), "load_profiles",
             # "time_series_mapping" (maps clusters sequentially to potential periods in year),
             # "ClusterWeights", etc. See PG for full details.
-            print("Beginning clustering of timeseries.")
+            print(f"Beginning clustering of timeseries ({model_year}).")
             results, representative_point, weights = kmeans_time_clustering(
                 resource_profiles=period_all_gen_variability,
                 load_profiles=period_lc,
