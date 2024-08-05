@@ -1667,8 +1667,8 @@ def main(
     results_folder: str,
     # case_id: Annotated[Optional[List[str]], typer.Option()] = None,
     # year: Annotated[Optional[List[float]], typer.Option()] = None,
-    case_id: List[str] = None,
-    year: List[int] = None,
+    case_id: List[str] = [],
+    year: List[int] = [],
     myopic: bool = False,
 ):
     """Create inputs for the Switch model using PowerGenome data
