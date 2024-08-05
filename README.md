@@ -75,24 +75,24 @@ Open a terminal pane: Terminal > New Terminal
 Run these commands in the terminal pane.
 
 ```
-# create a minimal switch-pg environement with enough to bootstrap the rest
-conda create -y -c conda-forge -n switch-pg python=3.10 mamba git ipykernel
-conda activate switch-pg
+# add some tools to your base environment to use for installing the rest
+# (if you prefer not to alter your base environment, you could add these to a
+# "pre-install" environment and use that for the initial setup)
+conda install -y -c conda-forge mamba git
 
 # clone this repository and the dependency submodules (PowerGenome and MIP_results_comparison)
 cd <wherever you want the Switch-USA-PG code>
 git clone https://github.com/switch-model/Switch-USA-PG --recurse-submodules
 cd Switch-USA-PG
 
-# Setup powergenome environment
-# Create and activate the environment
+# Create and activate powergenome environment
+mamba create -y -c conda-forge -n switch-pg python=3.10 mamba git ipykernel
 mamba env update -n switch-pg -f environment.yml
 mamba env update -n switch-pg -f PowerGenome/environment.yml
-
 conda activate switch-pg
+
 # install PowerGenome from local sub-repository
 pip install -e PowerGenome
-
 ```
 
 Close the current VS Code window. Then choose File > Open, then navigate to the
@@ -109,6 +109,7 @@ terminal pane (inside the Switch-USA-PG directory):
 
 ```
 conda activate switch-pg
+
 python download_pg_data.py
 ```
 
