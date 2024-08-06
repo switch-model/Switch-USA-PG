@@ -104,34 +104,76 @@ def post_solve(m, outdir):
         # path.parent.mkdir(parents=True, exist_ok=True)
         df.to_csv(path, index=False, na_rep=".")
 
-    def merge_build_data(df, filename, keep="last"):
+    """
+    df = predet
+    filename = "gen_build_predetermined.csv"
+    """
+
+    def merge_build_data(df, filename):
         """
-        Merge construction or cost data in dataframe df with equivalent data
-        from next model, dropping duplicates (same project and period) and
-        reporting any cases where the duplicates have different data.
+        Use construction data from the current dataframe with later construction
+        data from the specified table in the next stage.
+
+        df and <filename> should have generation project and build year as first
+        two columns.
+
+        This uses all data from df plus any data from <filename> that occurs
+        after the start of the next period. However, if use_later_records()
+        returns True, it will always drop the row from df and always use data
+        from <filename>.
+
+        Splitting in time ensures that future stages are consistent with the
+        past, including any retirements (which may get dropped completely from
+        the model.)
         """
+        next_period_start = read_csv(next_in_path, "periods.csv")["period_start"].min()
         next_df = read_csv(next_in_path, filename)
         # make sure column names are consistent
         next_df = next_df.rename(columns=dict(zip(next_df.columns[:2], df.columns[:2])))
-        # append, dropping any 100% duplicate rows
-        df = pd.concat([df, next_df]).drop_duplicates()
+        # drop any use_next_record() records from incoming df
+        df = df.loc[~use_next_stage_records(df), :]
+        # drop data from next stage prior to the start of that stage
+        next_df = next_df.loc[
+            (next_df.iloc[:, 1] >= next_period_start)
+            | (use_next_stage_records(next_df)),
+            :,
+        ]
+        df = pd.concat([df, next_df], ignore_index=True)
         # The first two columns should be ["GENERATION_PROJECT", "BUILD_YEAR"]
         # but spelling/capitalization may differ.
         dup_cols = df.columns[:2]
-        # report any duplicates (hopefully none)
+        # save any duplicate gen/build_year with different capacities (hopefully none)
         dups = df.loc[df.duplicated(subset=dup_cols, keep=False), :]
         if not dups.empty:
-            # Keep the data from one model, but save a copy of the duplicates in
-            # case the user wants to inspect them (these are fairly common
-            # because units sizes vary between periods due to derating with a
-            # capacity factor that may vary between periods, and fixed O&M rises
-            # over time for some technologies in PG; retirements also create
-            # differences between predetermined capacity in the dataframe and in
-            # the next model).
-            df = df.drop_duplicates(subset=dup_cols, keep=keep)
+            # Keep the data from the selected period, but save a copy of the
+            # duplicates in case the user wants to inspect them (these are
+            # fairly common because unit sizes vary between periods due to
+            # derating with a capacity factor that may vary between periods, and
+            # fixed O&M rises over time for some technologies in PG; retirements
+            # also create differences between predetermined capacity in the
+            # dataframe and in the next model).
+            df = df.drop_duplicates(subset=dup_cols, keep="first")
             to_csv(dups, chained(next_in_path, "dup." + filename))
 
         return df
+
+    def use_next_stage_records(df):
+        """
+        Accept a dataframe with generation project names in the first column and
+        return a vector of True or False indicating whether we should _always_
+        use data for this generator from the next stage (True) or prefer data
+        from the current stage (False).
+
+        This is only used to identify distributed generation (usually rooftop
+        solar). PowerGenome doesn't have construction years for this capacity,
+        so pg_to_switch.py calculates a suitable schedule. But this schedule may
+        differ from one stage of a myopic model to the next, so we drop anything
+        from the earlier stage and just use the schedule calculated for the
+        later stage (generally constructed in the reference year of the period.)
+        Note: this makes it impossible to carry distributed gen retirements
+        through to later stages, but that is not allowed anyway.
+        """
+        return df.iloc[:, 0].str.contains("distributed_generation")
 
     # use actual construction from current model (includes both predetermined and
     # optimized resources) as the predetermined construction for the next stage.
@@ -151,7 +193,11 @@ def post_solve(m, outdir):
     )
     predet = build_mw.merge(build_mwh, how="left")
 
-    # treat any retired capacity as if it was never built
+    # Treat any retired capacity as if it was never built.
+    # Note: this will not carry forward capital costs of retired plants, so it
+    # should only be used with plants with no capital costs. That is the
+    # approach in MIP, where it only applies to existing plants, which are shown
+    # with $0 capital cost.
     retire = read_csv(out_path, "SuspendGen.csv").rename(
         columns={
             "GEN_BLD_SUSPEND_YRS_1": "GENERATION_PROJECT",
@@ -166,39 +212,35 @@ def post_solve(m, outdir):
     # set but there is still a value (implying gen_can_retire_early was set).
     if not "gen_can_suspend" in gen_info.columns:
         gen_info["gen_can_suspend"] = 0
-    must_retire_gens = gen_info.query("gen_can_suspend == 0").iloc[0, :]
+    must_retire_gens = gen_info.query("gen_can_suspend == 0").iloc[:, 0]
     retire = retire.loc[
-        retire["GENERATION_PROJECT"].isin(must_retire_gens) & (retire["retire_mw"] > 0),
+        retire["GENERATION_PROJECT"].isin(must_retire_gens)
+        & (retire["retire_mw"] > 1e-6),
         :,
     ]
-    # todo?: handle chained models with multi-period stages:
-    # retire = retire.groupby(['GENERATION_PROJECT', 'build_year'])[['retire_mw']].sum().reset_index()
+    # handle chained models with multi-period stages (possible in the future)
+    retire = (
+        retire.groupby(["GENERATION_PROJECT", "build_year"])[["retire_mw"]]
+        .sum()
+        .reset_index()
+    )
     predet_cols = predet.columns
     predet = predet.merge(retire, how="left")
     predet["build_gen_predetermined"] -= predet["retire_mw"].fillna(0)
     predet = predet[predet_cols]
 
-    # drop unused options
-    predet = predet.query(
-        "(build_gen_predetermined > 0) | (build_gen_energy_predetermined > 0)"
-    )
-    # drop any that don't appear in the next model (this should never occur
+    # drop any that don't appear in the next stage (this should never occur
     # in principle, but in practice in the MIP project there are some
     # inconsistencies and this is the only way to resolve them)
     next_gen_info = read_csv(next_in_path, "gen_info.csv")
     predet = predet.merge(next_gen_info["GENERATION_PROJECT"])
 
-    # distributed solar(dg) are treated as existing generators in MIP study and it has
-    # a growing capacity in each period. For myopic, the capacity showed in
-    # build_gen_predetermined.csv are the TOTAL available capacity in current period.
-    # 'merge_build_data' function below would keep all the records since they are not
-    # duplicated (total capacity varies by period). We need to drop the record of dg from
-    # previous period before merging with next period's "gen_build_predetermined.csv".
-    predet = predet.loc[predet["GENERATION_PROJECT"].str.contains("distr") == False]
-    # merge with any from the next model, to pickup predetermined construction
-    # after this part of the study; when there are duplicates, keep the first
-    # one (the dataframe) to propagate retirements forward
-    predet = merge_build_data(predet, "gen_build_predetermined.csv", keep="first")
+    # Merge with the predetermined construction data from the next stage.
+    predet = merge_build_data(predet, "gen_build_predetermined.csv")
+    # drop any that are zero or very small
+    predet = predet.query(
+        "build_gen_predetermined > 0.0001 or build_gen_energy_predetermined > 0.0001"
+    )
     to_csv(predet, chained(next_in_path, "gen_build_predetermined.csv"))
 
     # use this model's costs for everything that was built and next model's
@@ -215,23 +257,13 @@ def post_solve(m, outdir):
         right_on=predet.columns[:2].to_list(),
         how="inner",
     )[costs.columns]
-    # drop any that don't appear in the next model
+    # drop any that don't appear in the next stage
     costs = costs.merge(next_gen_info["GENERATION_PROJECT"])
     # merge cost data from this model with cost data from the next model
     # (this will use data from this model for projects/build_years from this
-    # model and data from the next model for additional projects/build_years,
-    # and give a warning if there are different data for any overlapping ones)
+    # model and data from the next model for additional projects/build_years)
     costs = merge_build_data(costs, "gen_build_costs.csv")
     to_csv(costs, chained(next_in_path, "gen_build_costs.csv"))
-
-    # remove caps on any non-new-build generators to avoid infeasibility due
-    # to inconsistencies
-    # (no longer needed, because we no longer have these caps in the first place)
-    # next_gen_info.loc[
-    #     ~next_gen_info["GENERATION_PROJECT"].isin(costs_new["GENERATION_PROJECT"]),
-    #     "gen_capacity_limit_mw",
-    # ] = float("nan")
-    # to_csv(next_gen_info, chained(next_in_path, "gen_info.csv"))
 
     # combine starting transmission for this case with transmission expansion
     trans = read_csv(possibly_chained(in_path, "transmission_lines.csv"))
@@ -256,10 +288,29 @@ class Test:
     pass
 
 
-if __name__ == "__main__" and len(sys.argv) == 3:
-    # run a test case using the specified inputs and outputs directories
+if __name__ == "__main__":
+    # called from command line or run interactively in VS Code
     m = Test()
     m.options = Test()
-    m.options.inputs_dir = sys.argv[1]
-    m.options.outputs_dir = sys.argv[2]
-    post_solve(m, m.options.outputs_dir)
+    if len(sys.argv) == 3:
+        # called from command line with inputs-dir and outputs-dir
+        # run a test case using the specified inputs and outputs directories
+        m.options.inputs_dir = sys.argv[1]
+        m.options.outputs_dir = sys.argv[2]
+        post_solve(m, m.options.outputs_dir)
+    elif (
+        len(sys.argv) == 2 and os.path.basename(sys.argv[0]) == "ipykernel_launcher.py"
+    ):
+        # running interactively from VS Code
+        io_dir = "2024-08-04"
+        year = "2030"
+        case = "base_short_retire"
+        root = os.path.join(os.path.dirname(__file__), "..", io_dir)
+        m.options.inputs_dir = os.path.join(root, "in", year, case)
+        m.options.outputs_dir = os.path.join(root, "out", year, case)
+        outdir = m.options.outputs_dir
+        print("Run the contents of post_solve() interactively to see results.")
+    else:
+        raise RuntimeError(
+            "usage: python prepare_next_stage.py <inputs-dir> <outputs-dir>"
+        )
