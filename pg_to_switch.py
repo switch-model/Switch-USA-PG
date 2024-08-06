@@ -1814,19 +1814,18 @@ def main(
 
         # Retrieve gc for this case, using settings for first year so we get all
         # plants that survive up to that point (using last year would exclude
-        # plants that retire during the study)
-        # We set the multi_period flag based on the myopic flag; if multi_period
-        # is set (foresight models), PowerGenome uses the same generators for all
-        # periods (i.e., all generators in the database), which ensures that the
-        # time clustering ends up the same for all periods. But then PowerGenome
-        # also generates time-based data for generators even for periods when
-        # they are not operational.
+        # plants that retire during the study).
+        # Starting Aug. 2024, we always set the multi_period flag, to ensure
+        # that PowerGenome uses the same generators for all periods (i.e., all
+        # generators in the database), which ensures that the time clustering
+        # ends up the same for all periods. This is consistent with how GenX
+        # used PowerGenome for MIP.
         gc = GeneratorClusters(
             pudl_engine,
             pudl_out,
             pg_engine,
             first_year_settings,
-            multi_period=(not myopic),
+            multi_period=True,
         )
 
         # gc.fuel_prices already spans all years. We assume any added fuels show
