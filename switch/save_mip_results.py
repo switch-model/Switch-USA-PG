@@ -50,6 +50,10 @@ case_list = {
     # "current_policies_52_week_retire_high_ccs": "full-current-policies_retire"
 }
 
+# case_list = {
+#     "base_short_retire": "short-base-200-retire-new",
+# }
+
 
 def skip_case(case):
     test_in_files = [output_file(case, y, "BuildGen.csv") for y in year_list]
@@ -157,6 +161,9 @@ for c in case_list:
     if skip_case(c):
         continue
 
+    # make sure the necessary dir(s) exist
+    os.makedirs(comparison_file(c, ""), exist_ok=True)
+
     cap_dfs = [
         pd.DataFrame(
             columns=[
@@ -244,55 +251,34 @@ for c in case_list:
 
 ####################################### make  transmission.csv
 
-print("\ncreating transmission.csv")
+print("\ncreating transmission.csv and transmission_expansion.csv")
 for c in case_list:
     if skip_case(c):
         continue
     tx_agg = pd.DataFrame()
     for y in year_list:
-        transmission2030_new = pd.read_csv(output_file(c, y, "transmission.csv"))
+        transmission = pd.read_csv(output_file(c, y, "transmission.csv"))
 
-        # find the existing transmission capacity
-        transmission2030_ex = pd.read_csv(input_file(c, y, "transmission_lines.csv"))
+        transmission_addition = pd.read_csv(output_file(c, y, "BuildTx.csv")).rename(
+            columns={
+                "TRANS_BLD_YRS_1": "TRANSMISSION_LINE",
+                "TRANS_BLD_YRS_2": "PERIOD",
+            }
+        )
 
-        transmission2030 = transmission2030_new.merge(transmission2030_ex, how="left")
+        transmission = transmission.merge(transmission_addition, how="left")
+        transmission["start_value"] = transmission.eval(
+            "TxCapacityNameplate - BuildTx"
+        ).round(5)
+        transmission["end_value"] = transmission.eval("TxCapacityNameplate").round(5)
 
-        df = transmission2030.copy()
+        df = transmission.copy()
         df["model"] = "SWITCH"
         df["line_name"] = df["trans_lz1"] + "_to_" + df["trans_lz2"]
         df["planning_year"] = df["PERIOD"]
         df["case"] = c
         df["unit"] = "MW"
-        # for foreight scenario:
-        # define a function to find the values of "TxCapacityNameplate" from last period
-        # and fill it as the "start_value" of next period for same line.
 
-        if y == "foresight":
-            df.loc[df["PERIOD"] == 2030, "start_value"] = df["existing_trans_cap"]
-
-            fill_dict2030 = (
-                df.loc[df["PERIOD"] == 2030]
-                .groupby("line_name")["TxCapacityNameplate"]
-                .last()
-                .to_dict()
-            )
-            df.loc[df["PERIOD"] == 2040, "start_value"] = df["line_name"].map(
-                fill_dict2030
-            )
-
-            fill_dict2040 = (
-                df.loc[df["PERIOD"] == 2040]
-                .groupby("line_name")["TxCapacityNameplate"]
-                .last()
-                .to_dict()
-            )
-            df.loc[df["PERIOD"] == 2050, "start_value"] = df["line_name"].map(
-                fill_dict2040
-            )
-        else:
-            df["start_value"] = df["existing_trans_cap"]
-
-        df["end_value"] = df["TxCapacityNameplate"]
         df = df[
             [
                 "model",
@@ -324,8 +310,10 @@ for c in case_list:
     generation_agg = pd.DataFrame()
     dispatch_agg = pd.DataFrame()
     for y in year_list:
-        ts = pd.read_csv(input_file(c, y, "timeseries.csv"))
         df = pd.read_csv(output_file(c, y, "dispatch.csv"))
+
+        # use first timestamp from dispatch.csv to identify first week for reporting
+        first_timestamp = df["timestamp"].iloc[0]
 
         df["model"] = "SWITCH"
         df["zone"] = df["gen_load_zone"]
@@ -351,10 +339,12 @@ for c in case_list:
         )
         dp_stamps = dp_stamps.rename(columns={"period": "planning_year"})
         dp = dp.merge(dp_stamps, on="timestamp")
-
         dp = dp.sort_values(by=["week"])
-        week_to_report = ts.iloc[0]["timeseries"][6:]
-        dp = dp.loc[dp["week"] == int(week_to_report)]
+        week_to_report = dp_stamps.loc[
+            dp_stamps["timestamp"] == first_timestamp, "week"
+        ].iloc[0]
+
+        dp = dp.loc[dp["week"] == week_to_report]
         dp = dp[
             [
                 "hour",
@@ -368,7 +358,14 @@ for c in case_list:
                 "date",
             ]
         ]
-        dp = dp.loc[dp["value"] > 0]
+        # filter out unused resources (seem to be very few)
+        non_zeros = (
+            dp.groupby("resource_name")["value"]
+            .sum()
+            .reset_index()
+            .query("value > 1e-5")["resource_name"]
+        )
+        dp = dp.loc[dp["resource_name"].isin(non_zeros), :]
 
         df["value"] = df["DispatchGen_MW"] * df["tp_weight_in_year_hrs"]
         generation = df.groupby(["resource_name", "period"], as_index=False).agg(
@@ -390,8 +387,6 @@ for c in case_list:
 
     dispatch_agg.to_csv(comparison_file(c, "dispatch.csv"), index=False)
     generation_agg.to_csv(comparison_file(c, "generation.csv"), index=False)
-
-    # generation2030 = generation2030.rename({"DispatchGen_MW": "value"}, axis=1)
 
 
 ################################### make  emission.csv
