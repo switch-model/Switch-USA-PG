@@ -244,6 +244,10 @@ for c in case_list:
 
     # drop empty rows
     cap_agg = cap_agg.loc[(cap_agg["end_value"] > 0) | (cap_agg["end_MWh"] > 0)]
+
+    # sort by year then gen to match previous versions
+    cap_agg = cap_agg.sort_values(["planning_year", "resource_name"])
+
     cap_agg.to_csv(
         comparison_file(c, "resource_capacity.csv"),
         index=False,
