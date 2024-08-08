@@ -217,8 +217,8 @@ def gen_info_table(
         # settings for older GenX
         # New_Build == -1 -> existing, cannot retire
         # New_Build == 0 -> existing, can retire
-        # New_Build == 1 -> new build, cannot retire in current version of GenX
-        gen_info["gen_can_retire_early"] = (gen_info["New_Build"] == 0).astype("Int64")
+        # New_Build >= 1 -> new build, can retire in current version of GenX
+        gen_info["gen_can_retire_early"] = (gen_info["New_Build"] >= 0).astype("Int64")
 
     # rename columns
     gen_info.rename(
