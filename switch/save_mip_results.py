@@ -71,7 +71,6 @@ def skip_case(case):
 
     if not all(os.path.exists(f) for f in test_in_files):
         print(f"Skipping unsolved case '{c}'.")
-        breakpoint()
         return True
 
     if "--skip-saved" in sys.argv and all(os.path.exists(f) for f in test_out_files):
@@ -311,10 +310,10 @@ print("\ncreating generation.csv")
 for c in case_list:
     if skip_case(c):
         continue
-    generation_agg = pd.DataFrame()
-    dispatch_agg = pd.DataFrame()
+    generation_dfs = []
+    dispatch_dfs = []
     for y in year_list:
-        df = pd.read_csv(output_file(c, y, "dispatch.csv"))
+        df = pd.read_csv(output_file(c, y, "dispatch.csv"), engine="pyarrow")
 
         # use first timestamp from dispatch.csv to identify first week for reporting
         first_timestamp = df["timestamp"].iloc[0]
@@ -358,8 +357,6 @@ for c in case_list:
                 "planning_year",
                 "model",
                 "case",
-                "week",
-                "date",
             ]
         ]
         # filter out unused resources (seem to be very few)
@@ -386,12 +383,21 @@ for c in case_list:
         )
         generation["planning_year"] = generation["period"]
 
-        dispatch_agg = pd.concat([dispatch_agg, dp])
-        generation_agg = pd.concat([generation_agg, generation])
+        dispatch_dfs.append(dp)
+        generation_dfs.append(generation)
+        # save memory
+        del df, dp, generation
 
-    dispatch_agg.to_csv(comparison_file(c, "dispatch.csv"), index=False)
+    dispatch_agg = pd.concat(dispatch_dfs)
+    del dispatch_dfs
+    generation_agg = pd.concat(generation_dfs)
+    del generation_dfs
+
+    dispatch_agg.to_csv(comparison_file(c, "dispatch.csv.gz"), index=False)
     generation_agg.to_csv(comparison_file(c, "generation.csv"), index=False)
 
+    # save memory
+    del dispatch_agg, generation_agg
 
 ################################### make  emission.csv
 
@@ -401,8 +407,7 @@ for c in case_list:
         continue
     emission_agg = pd.DataFrame()
     for y in year_list:
-        emission2030 = pd.read_csv(output_file(c, y, "dispatch.csv"))
-        df = emission2030.copy()
+        df = pd.read_csv(output_file(c, y, "dispatch_zonal_annual_summary.csv"))
 
         df = df.groupby(["gen_load_zone", "period"], as_index=False).agg(
             {
@@ -417,11 +422,14 @@ for c in case_list:
         df["model"] = "SWITCH"
         df["case"] = c
         df["unit"] = "kg"
-        df["value"] = df["value"] * 1000  # from ton to kg
+        df["value"] = df["value"] * 1000  # from tonne to kg
         df = df[["model", "zone", "planning_year", "case", "unit", "value"]]
         emission_agg = pd.concat([emission_agg, df])
 
     emission_agg.to_csv(comparison_file(c, "emissions.csv"), index=False)
+
+    # save memory
+    del df, emission_agg
 
 
 print(
