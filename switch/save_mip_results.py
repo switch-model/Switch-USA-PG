@@ -51,7 +51,7 @@ case_list = {
 }
 
 # case_list = {
-#     "base_short_retire": "short-base-200-retire-new",
+#     "base_short_retire": "short-base-200-retire-derate",
 # }
 
 
@@ -212,6 +212,15 @@ for c in case_list:
         cap["start_value"] = cap.eval("end_value + SuspendGen_total - BuildGen")
         # note: MWh can't be retired
         cap["start_MWh"] = cap.eval("end_MWh - BuildStorageEnergy")
+
+        # derate capacity according to forced outage rate to match GenX for
+        # reporting and operational simulation
+        gen_info = pd.read_csv(input_file(c, y, "gen_info.csv"), na_values=".")
+        availability = 1 - cap["resource_name"].map(
+            gen_info.set_index("GENERATION_PROJECT")["gen_forced_outage_rate"]
+        )
+        cap["start_value"] *= availability
+        cap["end_value"] *= availability
 
         cap = cap[
             [
