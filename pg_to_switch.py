@@ -995,6 +995,15 @@ def eia_build_info(gc: GeneratorClusters):
     # don't have an online date so PG couldn't assign a retirement date)
     units = units.query("retirement_year.notna()")
 
+    # Use object attribute -- set in main() -- to determine if PG bug should be replicated
+    if gc.__dict__.get("pg_unit_bug", False):
+        units["true_retirement_year"] = units.loc[:, "retirement_year"]
+        units["retirement_year"] = (
+            units.groupby(["plant_id_eia", "unit_id_pg"])["retirement_year"]
+            .transform("min")
+            .values
+        )
+
     # infer the build date from retirement_year and retirement_age
     # (may not be the right year, but will cause it to retire at the right
     # time, which is generally most important)
@@ -1670,6 +1679,7 @@ def main(
     case_id: List[str] = [],
     year: List[int] = [],
     myopic: bool = False,
+    pg_unit_bug: bool = False,
 ):
     """Create inputs for the Switch model using PowerGenome data
 
@@ -1693,6 +1703,10 @@ def main(
         A flag indicating whether to create model inputs in myopic mode (separate
         models for each study year) or as a single multi-year model (default).
         If only one year is chosen with the --year flag, this will have no effect.
+    pg_unit_bug : bool, optional
+        A flag indicating if the PowerGenome bug -- assuming all generators within a unit
+        -- should be replicated. This will primarily affect combined cycle units, and
+        cause some capacity to retire earlier than it would otherwise.
     """
     cwd = Path.cwd()
     results_folder = cwd / results_folder
@@ -1827,6 +1841,10 @@ def main(
             first_year_settings,
             multi_period=True,
         )
+
+        # Set object attribute indicating if the PG unit retirement data bug should be
+        # replicated.
+        gc.pg_unit_bug = pg_unit_bug
 
         # gc.fuel_prices already spans all years. We assume any added fuels show
         # up in the last year of the study. Then add_user_fuel_prices() adds them
