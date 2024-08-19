@@ -35,8 +35,12 @@ myopic_case_list = {
     "current_policies_short_retire_high_ccs": "short-current-policies-retire",
     "current_policies_short_retire_low_ccs": "short-current-policies-retire-low-ccs",
     "base_20_week": "20-week-myopic",
+    # old names
     "base_52_1000": "full-base-1000",
     "base_52_50": "full-base-50",
+    # next two are the new names for these cases
+    "base_52_week_co2_1000": "full-base-1000",
+    "base_52_week_co2_50": "full-base-50",
     "base_52_week": "full-base-200",
     "base_52_week_commit": "full-base-200-commit",
     "base_52_week_no_ccs": "full-base-200-no-ccs",
@@ -45,13 +49,21 @@ myopic_case_list = {
     "base_52_week_tx_15": "full-base-200-tx-15",
     "base_52_week_tx_50": "full-base-200-tx-50",
     "current_policies_20_week": "20-week-myopic-current-policy",
+    # old names
     "current_policies_52_week_commit_high_ccs": "full-current-policies-commit",
     "current_policies_52_week_high_ccs": "full-current-policies",
     "current_policies_52_week_retire_high_ccs": "full-current-policies-retire",
+    # new names
+    "current_policies_52_week_commit": "full-current-policies-commit",
+    "current_policies_52_week": "full-current-policies",
+    "current_policies_52_week": "full-current-policies-retire",
 }
 foresight_case_list = {
     "base_20_week": "20-week-foresight",
+    # old name for this case
     "base_short_current_policies_high_ITC": "20-week-foresight-current-policy",
+    # new name for this case
+    "current_policies_20_week": "20-week-foresight-current-policy",
 }
 
 

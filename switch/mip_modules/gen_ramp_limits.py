@@ -15,7 +15,8 @@ def define_components(m):
     )
 
     # TODO: make this deal more correctly with multi-hour timepoints
-    # (only one mandatory shutdown, not n_hours * min_load, and assume it can reach min load in first hour, then ramp from there at standard rate per hour)
+    # (only one mandatory shutdown, not n_hours * min_load, and assume it can
+    # reach min load in first hour, then ramp from there at standard rate per hour)
     def ramp_up_rule(m, g, tp):
         if m.gen_ramp_limit_up[g] >= 1:
             return Constraint.Skip

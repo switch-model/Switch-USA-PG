@@ -131,110 +131,152 @@ selected.
 
 # Generate Switch inputs
 
-Run these scripts to generate data. (You can run individual ones as needed for
-testing.)
+To setup one model case for one year for testing, you can run this command:
 
 ```
-python pg_to_switch.py MIP_results_comparison/case_settings/26-zone/settings-atb2023 switch/26-zone/in/ --case-id base_short --case-id base_short_no_ccs --case-id base_short_current_policies --myopic
-python pg_to_switch.py MIP_results_comparison/case_settings/26-zone/settings-atb2023 switch/26-zone/in/ --case-id base_short
+# setup one example case (specify case-id and year)
+python pg_to_switch.py MIP_results_comparison/case_settings/26-zone/settings-atb2023 switch/26-zone/in/ --case-id base_short --year 2050
 ```
 
-On an HPC system that uses the slurm scheduling manager, this can be done
-as follows:
+The `pg_to_switch.py` script uses settings from the first directory you specify
+(`MIP_results_comparison/case_settings/26-zone/settings-atb2023`) and places
+Switch model input files below the second directory you specify
+(`switch/26-zone/in/`).
+
+To generate data for a specific model case, use `--case-id <case_name>`. To
+generate data for multiple cases, use `--case-id <case_1> --case-id <case_2>`,
+etc. If you omit the `--case-id` flag, `pg_to_switch.py` will generate inputs
+for all available cases.
+
+Similarly, to generate data for a specific year, use `--year NNNN`, for multiple
+years, use `--year MMMM --year NNNN`, etc. If you omit the `--year` flag,
+`pg_to_switch.py` will generate inputs for all available years.
+
+By default, `pg_to_switch.py` will generate foresight models for each case-id
+when multiple years are requested. In this case, each model will use all
+available years of data. If you'd like to make single-period (myopic) models,
+you can use the `--myopic` flag.
+
+For the MIP project, most cases were setup as myopic models, where one model was
+created for each case for each reference year, then they were solved in
+sequence, from the first to the last, with extra code to carry construction
+plans and retirements forward to later years.
+
+The following commands will generate all model data for the MIP study.
+
+```
+# setup all myopic cases (don't specify case-id)
+python pg_to_switch.py MIP_results_comparison/case_settings/26-zone/settings-atb2023 switch/26-zone/in/ --myopic
+# setup foresight cases (only for two main cases)
+python pg_to_switch.py MIP_results_comparison/case_settings/26-zone/settings-atb2023 switch/26-zone/in/ --case-id base_20_week --case-id current_policies_20_week
+```
+
+On an HPC system that uses the slurm scheduling manager, this can be done as
+follows:
 
 ```
 srun setup_cases.slurm
 ```
 
-By default, `pg_to_switch.py` will generate multi-year (foresight) models for each case-id, with each model using all available years of data. If you'd like to make single-period (myopic)) models, you can use the `--myopic` flag. To generate data for a specific year, use `--year NNNN`. To generate data for multiple specific years, use `--year MMMM --year NNNN`, etc.
-
-If you omit the `--case-id` flag, `pg_to_switch.py` will generate inputs for all available cases. This is probably not a good idea, since they will require a lot of space and many of them will not be needed.
-
-(Note: for comparison, you can generate GenX inputs by going to
-`MIP_results_comparison/case_settings/26-zone` and running
-`run_powergenome_multiple -sf settings -rf genx_inputs -c base_short`. They will
-be stored in `MIP_results_comparison/case_settings/26-zone/genx_inputs`.)
+(Note: for comparison, you can generate GenX inputs by running `mkdir -p
+genx/in`, then `run_powergenome_multiple -sf
+MIP_results_comparison/case_settings/26-zone -rf genx/in -c base_short`. They
+will stored in `genx/in`.)
 
 # Run Switch
 
-*how do we handle settings that are not embedded in a directory structure, *
-*e.g., --input-alias or different module lists?*
-
-*TODO: define a switch.yml that for each scenarios/configuration*
-*identifies the data scenario to use and other settings or adjustments, e.g.,*
-*add an alternative carbon price file and use that. Then build scenarios_yyyy.txt files*
-*to run each set of scenarios in sequence, i.e., scenarios_2030.txt, scenarios_2040.txt,*
-*scenarios_foresight.txt*.
-
-you can solve one model this way:
-```
-cd switch
-switch solve --inputs-dir 26-zone/in/2030/base_short --outputs-dir 26-zone/out/2030/base_short
-```
-
-to solve all the scenarios, use this:
-```
-cd switch
-switch solve-scenarios --scenario-list scenarios_foresight.txt
-switch solve-scenarios --scenario-list scenarios_2030.txt
-# wait for 2030 to finish; will automatically prepare 2040 models
-switch solve-scenarios --scenario-list scenarios_2040.txt
-# wait for 2040 to finish; will automatically prepare 2050 models
-switch solve-scenarios --scenario-list scenarios_2050.txt
-```
-
-to solve individual scenarios, you can use something like this:
-```
-switch solve-scenarios --scenario-list scenarios_2030.txt --scenario base_short
-```
-
-On an HPC system that uses the slurm scheduling manager, scenarios can be run
-as follows:
+You can solve one case for one year like this:
 
 ```
 cd switch
-srun solve_scenarios.slurm --scenario-list scenarios_foresight.txt
-srun solve_scenarios.slurm --scenario-list scenarios_2030.txt
-srun -d <jobid for 2030 scenarios> solve_scenarios.slurm --scenario-list scenarios_2040.txt
-srun -d <jobid for 2040 scenarios> solve_scenarios.slurm --scenario-list scenarios_2050.txt
+switch solve --inputs-dir 26-zone/in/2030/base_52_week_2027 --outputs-dir 26-zone/out/2030/base_52_week_2027
 ```
 
-# Prepare next stage of myopic models
+This works well for the foresight cases, which only have one model to solve per
+case. However, for the myopic cases, it is necessary to solve each year in turn
+and chain the results forward to the next stage. The chaining can be done by
+adding `--include-module mip_modules.prepare_next_stage` to the command line for
+all but the last stage and adding
+`--input-aliases gen_build_predetermined.csv=gen_build_predetermined.chained.base_short.csv gen_build_costs.csv=gen_build_costs.chained.base_short.csv transmission_lines.csv=transmission_lines.chained.base_short.csv`
+for all but the first stage. (The `prepare_next_stage` module prepares
+alternative inputs for the next stage that include the construction plan from
+the current stage. Then the `--input-aliases` flag tells Switch to use those
+alternative inputs.)
 
-The scenarios defined above add `mip_modules.prepare_next_stage` to the 2030 and
-2040 models, which will automatically setup chained models. They also add an
-`--input-aliases` flag to the 2040 and 2050 models to make them use the
-construction plan saved from the previous stage.
+So you _could_ solve the myopic version of the `base_short` model with these commands (but there's a better option, see below):
 
-If you would like to implement this manually, you can use commands like this:
+```
+cd switch
+switch solve --inputs-dir 26-zone/in/2027/base_short --outputs-dir 26-zone/out/2027/base_short  --include-module mip_modules.prepare_next_stage
+switch solve --inputs-dir 26-zone/in/2030/base_short --outputs-dir 26-zone/out/2030/base_short  --include-module mip_modules.prepare_next_stage --input-aliases gen_build_predetermined.csv=gen_build_predetermined.chained.base_short.csv gen_build_costs.csv=gen_build_costs.chained.base_short.csv transmission_lines.csv=transmission_lines.chained.base_short.csv
+switch solve --inputs-dir 26-zone/in/2035/base_short --outputs-dir 26-zone/out/2035/base_short  --include-module mip_modules.prepare_next_stage --input-aliases gen_build_predetermined.csv=gen_build_predetermined.chained.base_short.csv gen_build_costs.csv=gen_build_costs.chained.base_short.csv transmission_lines.csv=transmission_lines.chained.base_short.csv
+switch solve --inputs-dir 26-zone/in/2040/base_short --outputs-dir 26-zone/out/2040/base_short  --include-module mip_modules.prepare_next_stage --input-aliases gen_build_predetermined.csv=gen_build_predetermined.chained.base_short.csv gen_build_costs.csv=gen_build_costs.chained.base_short.csv transmission_lines.csv=transmission_lines.chained.base_short.csv
+switch solve --inputs-dir 26-zone/in/2045/base_short --outputs-dir 26-zone/out/2045/base_short  --include-module mip_modules.prepare_next_stage --input-aliases gen_build_predetermined.csv=gen_build_predetermined.chained.base_short.csv gen_build_costs.csv=gen_build_costs.chained.base_short.csv transmission_lines.csv=transmission_lines.chained.base_short.csv
+switch solve --inputs-dir 26-zone/in/2050/base_short --outputs-dir 26-zone/out/2050/base_short  --input-aliases gen_build_predetermined.csv=gen_build_predetermined.chained.base_short.csv gen_build_costs.csv=gen_build_costs.chained.base_short.csv transmission_lines.csv=transmission_lines.chained.base_short.csv
+```
+
+To simplify solving myopic models, `pg_to_switch.py` creates scenario definition
+files in the `switch/26-zone/in` directory, with names like
+`scenarios_<case_name>.txt`. The `switch solve-scenarios` command can use these
+to solve all the steps in sequence. (Each one contains the command line flags
+needed for each stage of the model, and `swtich solve-scenarios` solves each one
+in turn.) So you can solve the reference case (`base_52_week`) with this
+command:
+
+```
+cd switch
+switch solve-scenarios --scenario-list 26-zone/in/scenarios_base_52_foresight.txt
+```
+
+The `pg_to_switch.py` command also creates scenario definition files for some
+alternative cases that share the same inputs directory as the standard cases,
+but use alternative versions of some input files (currently only the carbon
+price file). The definitions for these can also be found in `26-zone/in/`, and
+they can be solved the same way as the standard cases, e.g.,
+`switch solve-scenarios --scenario-list 26-zone/in/scenarios_base_52_week_co2_50.txt`.
+You can also look inside these to see the extra flags used setup these cases.
+
+To run all the cases for the MIP study, you can use the following commands:
 
 ```
 cd switch
 
-# 2030 stage
-switch solve --inputs-dir 26-zone/in/2030/base_short --outputs-dir 26-zone/out/2030/base_short --include-module mip_modules.prepare_next_stage
+# myopic cases
+switch solve-scenarios --scenario-list 26-zone/in/scenarios_base_20_week.txt
+switch solve-scenarios --scenario-list 26-zone/in/scenarios_base_52_week.txt
+switch solve-scenarios --scenario-list 26-zone/in/scenarios_base_52_week_co2_50.txt
+switch solve-scenarios --scenario-list 26-zone/in/scenarios_base_52_week_co2_1000.txt
+switch solve-scenarios --scenario-list 26-zone/in/scenarios_base_52_week_commit.txt
+switch solve-scenarios --scenario-list 26-zone/in/scenarios_base_52_week_no_ccs.txt
+switch solve-scenarios --scenario-list 26-zone/in/scenarios_base_52_week_retire.txt
+switch solve-scenarios --scenario-list 26-zone/in/scenarios_base_52_week_tx_0.txt
+switch solve-scenarios --scenario-list 26-zone/in/scenarios_base_52_week_tx_15.txt
+switch solve-scenarios --scenario-list 26-zone/in/scenarios_base_52_week_tx_50.txt
+switch solve-scenarios --scenario-list 26-zone/in/scenarios_current_policies_20_week.txt
+switch solve-scenarios --scenario-list 26-zone/in/scenarios_current_policies_52_week.txt
+switch solve-scenarios --scenario-list 26-zone/in/scenarios_current_policies_52_week_commit.txt
+switch solve-scenarios --scenario-list 26-zone/in/scenarios_current_policies_52_week_retire.txt
 
-# 2040 stage
-switch solve --inputs-dir 26-zone/in/2040/base_short --outputs-dir 26-zone/out/2040/base_short --include-module mip_modules.prepare_next_stage --input-aliases gen_build_predetermined.csv=gen_build_predetermined.chained.base_short.csv gen_build_costs.csv=gen_build_costs.chained.base_short.csv transmission_lines.csv=transmission_lines.chained.base_short.csv
-
-# 2050 stage
-switch solve --inputs-dir 26-zone/in/2050/base_short --outputs-dir 26-zone/out/2050/base_short --input-aliases gen_build_predetermined.csv=gen_build_predetermined.chained.base_short.csv gen_build_costs.csv=gen_build_costs.chained.base_short.csv transmission_lines.csv=transmission_lines.chained.base_short.csv
+# foresight cases
+switch solve-scenarios --scenario-list 26-zone/in/scenarios_base_20_week_foresight.txt
+switch solve-scenarios --scenario-list 26-zone/in/scenarios_current_policies_20_week_foresight.txt
 ```
 
-To manually create next-stage inputs from a previous stage's outputs, you can
-run a command like this:
+Note: If you ever need to manually create next-stage inputs from a previous
+stage's outputs, you can run a command like this:
 
 ```
 cd switch
-# prepare 2040 inputs from 2030 model (specify 2030 inputs and outputs directories)
-python -m mip_modules.prepare_next_stage 26-zone/in/2040/base_short 26-zone/out/2040/base_short
+# prepare 2035 inputs from 2030 model (specify 2030 inputs and outputs directories)
+python -m mip_modules.prepare_next_stage 26-zone/in/2030/base_short 26-zone/out/2030/base_short
 # or:
-python mip_modules/prepare_next_stage.py 26-zone/in/2040/base_short 26-zone/out/2040/base_short
+python mip_modules/prepare_next_stage.py 26-zone/in/2030/base_short 26-zone/out/2030/base_short
 ```
 
 # Prepare result summaries for comparison
 
-After the models have solved, run these commands to prepare standardized results and copy them to the MIP_results_comparison sub-repository.
+After solving the models, run these commands to prepare standardized results and
+copy them to the `MIP_results_comparison` sub-repository.
 
 ```
 cd MIP_results_comparison
@@ -247,8 +289,8 @@ git commit -m 'new Switch results'
 git push
 ```
 
-TODO: maybe move all of this into a switch module so it runs automatically when each
-case finishes
+TODO: maybe move all of this into a switch module so it runs automatically when
+each case finishes
 
 # Notes
 
@@ -259,10 +301,8 @@ MIP_results_comparison), use
 git pull --recurse-submodules
 ```
 
-To update individual submodules, just cd into the relevant directory and run
-`git pull`.
-
-After either of these, run `git add <submodule_dir>` in the main Switch-USA-PG
-directory and then commit to save the updated submodules in the Switch-USA-PG
-repository. This will save pointers in Switch-USA-PG showing which commit we are
-using in each submodule.
+To update a submodule, `cd` into the relevant directory and run `git pull`. Then
+run `git add <submodule_dir>` and `git commit` in the main Switch-USA-PG
+directory to save the updated submodules in the Switch-USA-PG repository. This
+will save pointers in Switch-USA-PG showing which commit we are using in each
+submodule.
