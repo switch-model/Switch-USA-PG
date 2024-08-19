@@ -25,7 +25,8 @@ def post_solve(m, outdir):
     # model if needed.
 
     # how to choose the next year in the chain
-    next_year_dict = {2027: 2030, 2030: 2035, 2035: 2040, 2040: 2045, 2045: 2050}
+    model_years = [2027, 2030, 2035, 2040, 2045, 2050]
+    next_year_dict = dict(zip(model_years[:-1], model_years[1:]))
 
     # we can tell which period we're dealing with by looking at m.PERIODS
     # or outdir, which should be be <root>/year/case

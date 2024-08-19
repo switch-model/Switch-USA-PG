@@ -1,21 +1,23 @@
 import os
 import sys
-import pandas as pd
-import numpy as np
-import scipy
 import math
 from datetime import datetime as dt
 import ast
 import itertools
 from statistics import mode
-from typing import List, Optional
 import collections
-
-from powergenome.resource_clusters import ResourceGroup
+import shlex
 from pathlib import Path
+from typing import List, Optional
+from typing_extensions import Annotated
+
+import pandas as pd
+import numpy as np
+import scipy
 import sqlalchemy as sa
 import typer
-from typing_extensions import Annotated
+
+from powergenome.resource_clusters import ResourceGroup
 
 import pandas as pd
 from powergenome.fuels import fuel_cost_table
@@ -1197,8 +1199,7 @@ def other_tables(
 
         # create alternative versions of the carbon cap
         if not co2_cap_long.empty:
-            # TODO: use input data for this
-            for carbon_price in [50, 200, 1000]:
+            for carbon_price in scen_settings.get("alternative_carbon_slack") or []:
                 ccl = co2_cap_long.copy()
                 ccl["carbon_cost_dollar_per_tco2"] = carbon_price
                 ccl.to_csv(
@@ -1561,29 +1562,29 @@ def transmission_tables(scen_settings_dict, out_folder, pg_engine):
         out_folder / "trans_path_expansion_limit.csv", index=False
     )
 
-    # create alternative transmission limits
-    # TODO: use input data for this
-    trans_limits = [(0, 0), (15, 400), (50, 400), (100, 400), (200, 400)]
-    for frac, min_mw in trans_limits:
-        dfs = []
-        for year in scen_settings_dict:
-            dfs.append(
-                pd.DataFrame(
-                    {
-                        "TRANSMISSION_LINE": transmission_lines["TRANSMISSION_LINE"],
-                        "PERIOD": year,
-                        # next line reimplements powergenome.GenX.network_max_reinforcement
-                        "trans_path_expansion_limit_mw": (
-                            transmission_lines["existing_trans_cap"] * frac * 0.01
-                        )
-                        .clip(lower=min_mw)
-                        .round(0),
-                    }
-                )
-            )
-        pd.concat(dfs).to_csv(
-            out_folder / f"trans_path_expansion_limit.{frac}.csv", index=False
-        )
+    # # create alternative transmission limits
+    # # TODO: use input data for this, similar to carbon prices
+    # trans_limits = [(0, 0), (15, 400), (50, 400), (100, 400), (200, 400)]
+    # for frac, min_mw in trans_limits:
+    #     dfs = []
+    #     for year in scen_settings_dict:
+    #         dfs.append(
+    #             pd.DataFrame(
+    #                 {
+    #                     "TRANSMISSION_LINE": transmission_lines["TRANSMISSION_LINE"],
+    #                     "PERIOD": year,
+    #                     # next line reimplements powergenome.GenX.network_max_reinforcement
+    #                     "trans_path_expansion_limit_mw": (
+    #                         transmission_lines["existing_trans_cap"] * frac * 0.01
+    #                     )
+    #                     .clip(lower=min_mw)
+    #                     .round(0),
+    #                 }
+    #             )
+    #         )
+    #     pd.concat(dfs).to_csv(
+    #         out_folder / f"trans_path_expansion_limit.{frac}.csv", index=False
+    #     )
 
 
 import ast
@@ -1635,18 +1636,84 @@ def year_name(years):
     # return "_".join(str(y) for y in yrs)
 
 
-def scenario_files(in_folder, out_folder, settings):
+def model_folder_names(results_folder, scen_name, case, year, myopic):
+    # figure out folder names
+    switch_path = Path(__file__).parent / "switch"
+    subst = {"in": "out", "input": "output", "inputs": "outputs"}
+    out_base = Path(*[subst.get(p, p) for p in results_folder.parts])
+    if out_base == results_folder:
+        out_base = results_folder / "out"
+    in_folder = (results_folder / year / case).relative_to(switch_path)
+    out_folder = (out_base / year / scen_name).relative_to(switch_path)
+    return in_folder, out_folder
+
+
+def scenario_files(results_folder, case_settings, myopic):
     """
     Create switch/scenarios*.txt, defining all the cases to run.
     """
-    # get dataframe of all possible scenario input data
-    scen_def_fn = in_folder / settings["scenario_definitions_fn"]
-    scenario_definitions = pd.read_csv(scen_def_fn)
+    # # get dataframe of all possible scenario input data
+    # scen_def_fn = in_folder / settings["scenario_definitions_fn"]
+    # scenario_definitions = pd.read_csv(scen_def_fn)
 
-    # need some way to list all the crosses that we do automatically;
-    # some of these are identified as PG scenarios, but we just do the cross
-    # on one element of the data (trans limits); some of them are just done outside PG to
-    # avoid creating too much data (carbon cost).
+    # TODO: generate this directly from the input files, not from the current
+    # working set; that way we can distinguish foresight from myopic?
+    # Or: if foresight, skip this; if myopic, generate the file?
+
+    scenarios = collections.defaultdict(list)
+
+    def add_scenario_row(scen_name, case, year, settings, extra=""):
+        y = str(year) if myopic else "foresight"  # duplicates year_name() logic
+        in_folder, out_folder = model_folder_names(
+            results_folder, scen_name, case, y, myopic
+        )
+        line = f"--scenario-name {scen_name}_{y} "
+        line += f"--inputs-dir {shlex.quote(str(in_folder))} --outputs-dir {shlex.quote(str(out_folder))} "
+        if settings.get("switch_module_list"):
+            line += f"--module-list {settings['switch_module_list']} "
+        line += extra
+        line = line.strip() + " "
+        if myopic:
+            if year != max(case_settings[case].keys()):
+                # chain investment choices forward to next stage
+                line += "--include-module mip_modules.prepare_next_stage "
+            if year != min(case_settings[case].keys()):
+                # use investment choices chained from previous stage
+                line += (
+                    "--input-aliases "
+                    f"gen_build_predetermined.csv=gen_build_predetermined.chained.{scen_name}.csv "
+                    f"gen_build_costs.csv=gen_build_costs.chained.{scen_name}.csv "
+                    f"transmission_lines.csv=transmission_lines.chained.{scen_name}.csv "
+                )
+        scenarios[scen_name].append(line.strip())
+
+    for case, year_settings in case_settings.items():
+        for year, settings in year_settings.items():
+            # add the standard scenario for this case
+            add_scenario_row(case, case, year, settings)
+            # add scenarios with alternative carbon prices, if any
+            for price in settings.get("alternative_carbon_slack") or []:
+                add_scenario_row(
+                    f"{case}_co2_{price}",
+                    case,
+                    year,
+                    settings,
+                    f"--input-alias carbon_policies_regional.csv=carbon_policies_regional.{price}.csv",
+                )
+            # could model different transmission levels the same way (see
+            # commented out code for alternative targets above), but for
+            # now we just generate completely different input dirs for each
+            # transmission case.
+
+    # write the scenarios_*.txt files
+    for scen_name, lines in scenarios.items():
+        scen_file = (
+            results_folder
+            / f"scenarios_{scen_name}{'' if myopic else '_foresight'}.txt"
+        )
+        with open(scen_file, "w") as f:
+            f.writelines(f"{line}\n" for line in lines)
+        print(f"created {scen_file.relative_to(Path.cwd())}")
 
 
 """
@@ -1655,7 +1722,7 @@ def scenario_files(in_folder, out_folder, settings):
 settings_file = "MIP_results_comparison/case_settings/26-zone/settings-atb2023"
 results_folder = "/tmp/pg_test"
 # case_id = ["base_short"]
-case_id = ["base_20_week"]
+case_id = ["base_20_week", "base_52_week"]
 # year = [2030] # [2030, 2040, 2050]
 year = []
 myopic = False
@@ -1861,7 +1928,7 @@ def main(
             pg_engine,
         )
 
-    scenario_files(input_folder, results_folder, settings)
+    scenario_files(results_folder, case_settings, myopic)
 
 
 if __name__ == "__main__" and "ipykernel" not in sys.argv[0]:
