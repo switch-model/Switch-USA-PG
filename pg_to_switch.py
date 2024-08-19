@@ -1713,7 +1713,19 @@ def scenario_files(results_folder, case_settings, myopic):
         )
         with open(scen_file, "w") as f:
             f.writelines(f"{line}\n" for line in lines)
-        print(f"created {scen_file.relative_to(Path.cwd())}")
+        print(f"created {short_fn(scen_file)}")
+
+
+def short_fn(filename):
+    """
+    Return filename relative to current directory if that is shorter than the
+    current filename. Useful for reporting filenames in logs.
+    """
+    fn = Path(filename)
+    short_fn = fn.relative_to(Path.cwd())
+    if len(str(short_fn)) > len(str(fn)):
+        short_fn = fn
+    return short_fn
 
 
 """
@@ -1737,6 +1749,7 @@ def main(
     case_id: List[str] = [],
     year: List[int] = [],
     myopic: bool = False,
+    case_index: int = -1,
 ):
     """Create inputs for the Switch model using PowerGenome data
 
@@ -1760,6 +1773,11 @@ def main(
         A flag indicating whether to create model inputs in myopic mode (separate
         models for each study year) or as a single multi-year model (default).
         If only one year is chosen with the --year flag, this will have no effect.
+    case_index : int, optional
+        An index selecting which case to prepare from among the indicated cases;
+        useful mainly for parallel jobs, where the first task prepares the first
+        case, second prepares the second, etc. Index starts from 1 for the first
+        case.
     """
     cwd = Path.cwd()
     results_folder = cwd / results_folder
@@ -1791,7 +1809,18 @@ def main(
     if case_id:
         filter_cases = case_id
     else:
-        filter_cases = scenario_definitions.case_id.unique()
+        filter_cases = scenario_definitions.case_id.unique().tolist()
+
+    # run only the specified case_index, if given
+    if case_index == -1:
+        pass
+    elif case_index < 1 or case_index > len(filter_cases):
+        raise IndexError(
+            f"`--case-index {case_index}` setting is beyond the range of "
+            "available cases (1-{len(filter_cases)})."
+        )
+    else:
+        filter_cases = filter_cases[case_index - 1 : case_index]
 
     if year:
         filter_years = year
@@ -1811,17 +1840,17 @@ def main(
             extra = " matching the requested case_id(s) or year(s)"
         else:
             extra = ""
-        print(f"WARNING: No scenarios{extra} were found in {scen_def_fn}.\n")
+        raise KeyError(f"No scenarios{extra} were found in {short_fn(scen_def_fn)}.")
     else:
-        missing = set(case_id).difference(set(scenario_definitions["case_id"]))
+        missing = set(filter_cases).difference(set(scenario_definitions["case_id"]))
         if missing:
-            print(
-                f"WARNING: requested case(s) {missing} were not found in {scen_def_fn}.\n"
+            raise KeyError(
+                f"Requested case(s) {missing} were not found in {short_fn(scen_def_fn)}."
             )
-        missing = set(year).difference(set(scenario_definitions["year"]))
+        missing = set(filter_years).difference(set(scenario_definitions["year"]))
         if missing:
-            print(
-                f"WARNING: requested year(s) {missing} were not found in {scen_def_fn}.\n"
+            raise KeyError(
+                f"Requested year(s) {missing} were not found in {short_fn(scen_def_fn)}."
             )
         # if case_id and year and len(found) < len(filter_cases) * len(filter_years):
         #     print(f"Note that not every combination of case_id and year specified on the command line was defined in {scen_def_fn}.")
@@ -1838,6 +1867,13 @@ def main(
     for y, cases in scenario_settings.items():
         for c, case_year_settings in cases.items():
             case_settings.setdefault(c, {})[y] = case_year_settings
+    # sort into order given by user (if any)
+    # case_order = {c: i for (i, c) in enumerate(filter_cases)}
+    # case_settings = dict(sorted(case_settings.items(), key=lambda item: case_order[item[0]]))
+    case_settings = {
+        c: case_settings[c]
+        for c in sorted(case_settings.keys(), key=filter_cases.index)
+    }
 
     if myopic:
         # run each case/year separately; split the settings for each year into
@@ -1851,7 +1887,7 @@ def main(
         # run all years together within each case
         to_run = list(case_settings.items())
 
-    print("\nPreparing models for the following cases:")
+    print("\nPreparing models for the following case(s) and year(s):")
     for c, scen_settings_dict in to_run:
         all_years = scen_settings_dict.keys()
         print(f"{c}: {', '.join(str(y) for y in all_years)}")
