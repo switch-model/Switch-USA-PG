@@ -171,17 +171,37 @@ python pg_to_switch.py MIP_results_comparison/case_settings/26-zone/settings-atb
 python pg_to_switch.py MIP_results_comparison/case_settings/26-zone/settings-atb2023 switch/26-zone/in/ --case-id base_20_week --case-id current_policies_20_week
 ```
 
-On an HPC system that uses the slurm scheduling manager, this can be done as
-follows:
-
-```
-srun setup_cases.slurm
-```
-
 (Note: for comparison, you can generate GenX inputs by running `mkdir -p
 genx/in`, then `run_powergenome_multiple -sf
 MIP_results_comparison/case_settings/26-zone -rf genx/in -c base_short`. They
 will stored in `genx/in`.)
+
+## Generate Switch inputs on high performance computing (HPC) cluster
+
+On an HPC system that uses the slurm scheduling manager, the cases can be setup
+in parallel as follows:
+
+```
+sbatch pg_to_switch.slurm MIP_results_comparison/case_settings/26-zone/settings-atb2023 switch/26-zone/in/ --myopic
+sbatch --array=1-2 pg_to_switch.slurm MIP_results_comparison/case_settings/26-zone/settings-atb2023 switch/26-zone/in/ --case-id base_20_week --case-id current_policies_20_week
+```
+
+The `pg_to_switch.slurm` batch definition will run multiple copies of the
+`pg_to_switch.py` script in an array with the arguments provided. It passes the
+task ID of each job within the array (by default elements 1-24) as a
+`--case-index` argument to the `pg_to_switch.py` script, which causes
+`pg_to_switch.py` to just setup that one case number from among all cases
+identified on the command line. You can adjust the `--array=n-m` at the start
+and `--case-id` arguments later in the line to choose which cases to prepare,
+e.g. this will just setup `base_short_retire`:
+
+```
+sbatch --array=1 pg_to_switch.slurm MIP_results_comparison/case_settings/26-zone/settings-atb2023 switch/26-zone/in/ --myopic --case-id base_short_retire
+```
+
+As an alternative, you can run `sbatch setup_cases.slurm`, which will run
+`setup_cases.sh`. This will prepare all the cases one by one using a single
+machine.
 
 # Run Switch
 
