@@ -69,9 +69,20 @@ def write_dual_costs(m):
             if bound is None:
                 # Variable is unbounded; dual should be 0.0 or possibly a tiny non-zero value.
                 if not (-1e-5 < dual < 1e-5):
-                    raise ValueError(
-                        f"{const.name} has no {'lower' if dual > 0 else 'upper'} "
+                    # Weird case; generate warning and weird data
+                    print(
+                        f"WARNING: {const.name} has no {'lower' if dual > 0 else 'upper'} "
                         f"bound but has a non-zero dual value {dual}."
+                    )
+                    dual_data.append(
+                        (
+                            prefix + const.parent_component().name,
+                            str(const.index()),
+                            direction,
+                            f"None + {offset}",
+                            dual,
+                            f"None + {dual * offset}",
+                        )
                     )
             else:
                 total_cost = dual * (bound + offset)
@@ -115,7 +126,15 @@ def write_dual_costs(m):
                     offset=offset,
                 )
 
-    dual_data.sort(key=lambda r: (not r[0].startswith("DR_Convex_"), r[3] >= 0) + r)
+    dual_data.sort(
+        key=lambda r: (
+            not r[0].startswith("DR_Convex_"),
+            isinstance(r[3], str) or r[3] >= 0,
+            r[0],
+            r[1],
+            r[2],
+        )
+    )
 
     write_table(
         m,

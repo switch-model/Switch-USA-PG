@@ -107,8 +107,11 @@ def define_components(m):
         if cap == float("inf"):
             return Constraint.Skip
         else:
+            # scale the cap down into the same range as other vars to improve
+            # numerical stability (may not be needed, since it has an easy
+            # feasibility fix by just raising the exceedance)
             # define and return the constraint
-            return emissions <= cap + exceedance
+            return emissions * 0.001 <= (cap + exceedance) * 0.001
 
     m.Enforce_Regional_Carbon_Cap = Constraint(m.CO2_PROGRAM_PERIODS, rule=rule)
 
