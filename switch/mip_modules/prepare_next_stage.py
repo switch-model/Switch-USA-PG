@@ -240,7 +240,7 @@ def post_solve(m, outdir):
     predet = merge_build_data(predet, "gen_build_predetermined.csv")
     # drop any that are zero or very small
     predet = predet.query(
-        "build_gen_predetermined > 0.0001 or build_gen_energy_predetermined > 0.0001"
+        "build_gen_predetermined > 0.001 or build_gen_energy_predetermined > 0.001"
     )
     to_csv(predet, chained(next_in_path, "gen_build_predetermined.csv"))
 
@@ -277,6 +277,9 @@ def post_solve(m, outdir):
     )
     trans = trans.merge(trans_built)
     trans["existing_trans_cap"] += trans["BuildTx"].fillna(0)
+    # round very small capacities to zero (generally occur due to solver
+    # rounding and may cause numerical warnings in next stage)
+    trans.loc[trans["existing_trans_cap"] < 0.001, "existing_trans_cap"] = 0
     trans = trans.drop(columns=["BuildTx"])
     to_csv(trans, chained(next_in_path, "transmission_lines.csv"))
 

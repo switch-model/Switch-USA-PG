@@ -74,24 +74,38 @@ def define_components(m):
         ),
     )
 
-    # enforce constraint on regional rps energy share in each program for zones in each period
+    # enforce constraint on regional rps energy share in each program for zones
+    # in each period
     def rule(m, pr, pe):
+        # use a scale factor to convert period-long multi-zone total energy
+        # into average energy per zone per hour (matching the scale of the MW
+        # values used on the RHS for zonal energy balances)
+        scale = 1.0 / (
+            m.period_length_hours[pe] * len(m.ZONES_IN_ESR_PROGRAM_PERIOD[pr, pe])
+        )
+
         # zonal demand for this program/period
-        zonal_demand_share = sum(
-            m.rps_share[pr, pe, z] * m.zone_total_demand_in_period_mwh[z, pe]
-            for z in m.ZONES_IN_ESR_PROGRAM_PERIOD[pr, pe]
+        zonal_demand_share = (
+            sum(
+                m.rps_share[pr, pe, z] * m.zone_total_demand_in_period_mwh[z, pe]
+                for z in m.ZONES_IN_ESR_PROGRAM_PERIOD[pr, pe]
+            )
+            * scale
         )
 
         # sum of annual dispatched energy for gens in this program in this period
-        EligibleEnergy = sum(
-            m.DispatchGen[g, t] * m.tp_weight[t]
-            for g in m.GENS_IN_ESR_PROGRAM[pr]
-            if g in m.GENS_IN_PERIOD[pe]
-            for t in m.TPS_FOR_GEN_IN_PERIOD[g, pe]
+        EligibleEnergy = (
+            sum(
+                m.DispatchGen[g, t] * m.tp_weight[t]
+                for g in m.GENS_IN_ESR_PROGRAM[pr]
+                if g in m.GENS_IN_PERIOD[pe]
+                for t in m.TPS_FOR_GEN_IN_PERIOD[g, pe]
+            )
+            * scale
         )
 
         # define and return the constraint
-        return EligibleEnergy >= zonal_demand_share
+        return EligibleEnergy * scale >= zonal_demand_share * scale
 
     m.Enforce_RPS_Share = Constraint(m.ESR_PROGRAM_PERIODS, rule=rule)
 
