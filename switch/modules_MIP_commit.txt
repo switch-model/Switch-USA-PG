@@ -4,7 +4,8 @@ switch_model.financials
 switch_model.balancing.load_zones
 switch_model.balancing.unserved_load
 switch_model.energy_sources.properties
-switch_model.generators.core.build
+# switch_model.generators.core.build
+mip_modules.gen_build
 switch_model.generators.core.dispatch
 switch_model.reporting
 switch_model.generators.core.commit.operate
@@ -32,3 +33,4 @@ mip_modules.gen_om_by_period
 # switch_model.generators.core.commit.fuel_use
 # switch_model.hawaii.hydrogen
 # switch_model.hawaii.save_results
+# mip_modules.write_dual_costs
