@@ -8,7 +8,7 @@
 --save-expression GenCapacity
 # --solver cplex --solver-options-string "lpmethod=4 solutiontype=2 emphasis_memory=yes"
 --solver gurobi --solver-options-string "method=2 crossover=0"
-# --solver coptampl --solver-options-string "lp:method=2 lp:crossover=0 tech:outlev=1"
+# --solver "/Applications/copt71/bin/coptampl" --solver-options-string "lp:method=2 lp:crossover=0 tech:outlev=1"
 # --solver appsi_highs --solver-options-string "solver=ipm parallel=on run_crossover=off threads=10"
 # Mosek args are from objects defined in mosek module, e.g., mosek.optimizertype.intpnt
 # also see
