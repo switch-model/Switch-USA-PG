@@ -998,7 +998,7 @@ def eia_build_info(gc: GeneratorClusters):
     units = units.query("retirement_year.notna()")
 
     # Use object attribute -- set in main() -- to determine if PG bug should be replicated
-    if gc.__dict__.get("pg_unit_bug", False):
+    if getattr(gc, "pg_unit_bug", False):
         units["true_retirement_year"] = units.loc[:, "retirement_year"]
         units["retirement_year"] = (
             units.groupby(["plant_id_eia", "unit_id_pg"])["retirement_year"]
@@ -1652,8 +1652,9 @@ def model_folder_names(results_folder, scen_name, case, year, myopic):
     out_base = Path(*[subst.get(p, p) for p in results_folder.parts])
     if out_base == results_folder:
         out_base = results_folder / "out"
-    in_folder = (results_folder / year / case).relative_to(switch_path)
-    out_folder = (out_base / year / scen_name).relative_to(switch_path)
+    in_folder = short_fn(results_folder / year / case, switch_path)
+    out_folder = short_fn(out_base / year / scen_name, switch_path)
+
     return in_folder, out_folder
 
 
@@ -1725,14 +1726,19 @@ def scenario_files(results_folder, case_settings, myopic):
         print(f"created {short_fn(scen_file)}")
 
 
-def short_fn(filename):
+def short_fn(filename, target=None):
     """
     Return filename relative to current directory if that is shorter than the
     current filename. Useful for reporting filenames in logs.
     """
+    if target is None:
+        target = Path.cwd()
     fn = Path(filename)
-    short_fn = fn.relative_to(Path.cwd())
-    if len(str(short_fn)) > len(str(fn)):
+    if fn.is_relative_to(target):
+        short_fn = fn.relative_to(target)
+        if len(str(short_fn)) > len(str(fn)):
+            short_fn = fn
+    else:
         short_fn = fn
     return short_fn
 
