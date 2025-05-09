@@ -75,10 +75,10 @@ Open a terminal pane: Terminal > New Terminal
 Run these commands in the terminal pane.
 
 ```
-# add some tools to your base environment to use for installing the rest
-# (if you prefer not to alter your base environment, you could add these to a
+# add `git` to your base environment to use for installing the rest
+# (if you prefer not to alter your base environment, you could add it to a
 # "pre-install" environment and use that for the initial setup)
-conda install -y -c conda-forge mamba git
+conda install -y -c conda-forge git
 
 # clone this repository and the dependency submodules (PowerGenome and MIP_results_comparison)
 cd <wherever you want the Switch-USA-PG code>
@@ -86,9 +86,10 @@ git clone https://github.com/switch-model/Switch-USA-PG --recurse-submodules --d
 cd Switch-USA-PG
 
 # Create and activate powergenome environment
-mamba create -y -c conda-forge -n switch-pg python=3.10 mamba git ipykernel
-mamba env update -n switch-pg -f environment.yml
-mamba env update -n switch-pg -f PowerGenome/environment.yml
+# On macOS with Apple silicon, use `CONDA_SUBDIR=osx-arm64 conda create ...`
+conda create -y -c conda-forge -n switch-pg python=3.10 git ipykernel
+conda env update -n switch-pg -f environment.yml
+conda env update -n switch-pg -f PowerGenome/environment.yml
 conda activate switch-pg
 
 # install PowerGenome from local sub-repository
