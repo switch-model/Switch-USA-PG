@@ -174,7 +174,7 @@ python pg_to_switch.py MIP_results_comparison/case_settings/26-zone/settings-atb
 
 (Note: for comparison, you can generate GenX inputs by running `mkdir -p
 genx/in`, then `run_powergenome_multiple -sf
-MIP_results_comparison/case_settings/26-zone -rf genx/in -c base_short`. They
+MIP_results_comparison/case_settings/26-zone/settings-atb2023 -rf genx/in -c base_short`. They
 will stored in `genx/in`.)
 
 ## Generate Switch inputs on high performance computing (HPC) cluster
